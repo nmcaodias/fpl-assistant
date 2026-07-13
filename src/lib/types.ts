@@ -51,12 +51,34 @@ export interface Player {
   clean_sheets: number;
   bonus: number;
   starts: number;
+  /** Season expected stats — numeric strings */
+  expected_goals: string;
+  expected_assists: string;
+  expected_goal_involvements: string;
+  /** Per-90 expected stats — numbers in the FPL API */
+  expected_goals_per_90: number;
+  expected_assists_per_90: number;
+  expected_goal_involvements_per_90: number;
+  saves_per_90: number;
+  /** Qualifying defensive actions (CBIT/CBIRT) per 90 — 2025/26 scoring rule */
+  defensive_contribution_per_90: number;
+}
+
+/** Chip availability window, from bootstrap-static. FPL runs two half-season
+ * sets: e.g. wildcard GW2–19 and wildcard GW20–38. */
+export interface ChipDef {
+  id: number;
+  name: string;
+  start_event: number;
+  stop_event: number;
+  number: number;
 }
 
 export interface Bootstrap {
   players: Player[];
   teams: Team[];
   events: Event[];
+  chips: ChipDef[];
 }
 
 export interface Fixture {

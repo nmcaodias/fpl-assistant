@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import { ErrorNote, Loading } from "@/components/ui";
-import { buildFixtureContext, fixtureEase, type UpcomingFixture } from "@/lib/scoring";
+import { buildProjectionContext, fixtureEase, type UpcomingFixture } from "@/lib/projection";
 import type { Bootstrap, Fixture } from "@/lib/types";
 import { useBootstrap, useFixtures } from "@/lib/useFpl";
 
@@ -21,7 +21,7 @@ export default function FixturesPage() {
 
 function FdrGrid({ bootstrap, fixtures }: { bootstrap: Bootstrap; fixtures: Fixture[] }) {
   const grid = useMemo(() => {
-    const ctx = buildFixtureContext(fixtures, bootstrap.events);
+    const ctx = buildProjectionContext(fixtures, bootstrap.events, bootstrap.teams);
     if (ctx.nextGw === null) return null;
 
     const gws = Array.from({ length: HORIZON }, (_, i) => (ctx.nextGw as number) + i)

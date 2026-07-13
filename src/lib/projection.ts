@@ -1,0 +1,295 @@
+// Expected-points (xPts) engine.
+//
+// Projects each player's points per future gameweek from underlying rates —
+// xG/xA per 90, team goals conceded (clean-sheet odds via Poisson), saves,
+// defensive contributions, bonus rate — scaled by projected minutes and
+// adjusted per fixture by FPL's difficulty rating. Double gameweeks sum both
+// fixtures; blanks are zero. This is what "thinking like a top manager" means
+// mechanically: decisions compare points over a horizon, not abstract scores.
+
+import type { Event, Fixture, Player, Position, Team } from "./types";
+
+export interface UpcomingFixture {
+  event: number;
+  opponent: number;
+  isHome: boolean;
+  difficulty: number; // FPL FDR, 1 (easiest) to 5 (hardest)
+}
+
+export interface ProjectionContext {
+  nextGw: number | null;
+  lastGw: number;
+  upcomingByTeam: Record<number, UpcomingFixture[]>;
+  /** Goals conceded per match this season, per team (clean-sheet baseline) */
+  concededPerMatch: Record<number, number>;
+  /** Finished matches per team (minutes baseline) */
+  gamesPlayed: Record<number, number>;
+  seasonFinished: boolean;
+}
+
+export function buildProjectionContext(
+  fixtures: Fixture[],
+  events: Event[],
+  teams: Team[],
+): ProjectionContext {
+  const next = events.find((e) => e.is_next) ?? events.find((e) => !e.finished);
+  const nextGw = next?.id ?? null;
+  const lastGw = events.length > 0 ? Math.max(...events.map((e) => e.id)) : 38;
+
+  const upcomingByTeam: Record<number, UpcomingFixture[]> = {};
+  if (nextGw !== null) {
+    const upcoming = fixtures
+      .filter((f) => !f.finished && f.event !== null && f.event >= nextGw)
+      .sort((a, b) => (a.event ?? 0) - (b.event ?? 0));
+    for (const f of upcoming) {
+      (upcomingByTeam[f.team_h] ??= []).push({
+        event: f.event as number,
+        opponent: f.team_a,
+        isHome: true,
+        difficulty: f.team_h_difficulty,
+      });
+      (upcomingByTeam[f.team_a] ??= []).push({
+        event: f.event as number,
+        opponent: f.team_h,
+        isHome: false,
+        difficulty: f.team_a_difficulty,
+      });
+    }
+  }
+
+  const conceded: Record<number, number> = {};
+  const games: Record<number, number> = {};
+  for (const f of fixtures) {
+    if (!f.finished || f.team_h_score === null || f.team_a_score === null) continue;
+    conceded[f.team_h] = (conceded[f.team_h] ?? 0) + f.team_a_score;
+    conceded[f.team_a] = (conceded[f.team_a] ?? 0) + f.team_h_score;
+    games[f.team_h] = (games[f.team_h] ?? 0) + 1;
+    games[f.team_a] = (games[f.team_a] ?? 0) + 1;
+  }
+  const concededPerMatch: Record<number, number> = {};
+  for (const t of teams) {
+    const g = games[t.id] ?? 0;
+    // 1.3 = league-average goals conceded, the prior when no games played yet.
+    concededPerMatch[t.id] = g > 0 ? (conceded[t.id] ?? 0) / g : 1.3;
+  }
+
+  return {
+    nextGw,
+    lastGw,
+    upcomingByTeam,
+    concededPerMatch,
+    gamesPlayed: games,
+    seasonFinished: nextGw === null,
+  };
+}
+
+/** Average fixture ease over the next `horizon` GWs, 0..1 — used by the FDR grid. */
+export function fixtureEase(
+  ctx: ProjectionContext,
+  teamId: number,
+  horizon: number,
+): number | null {
+  if (ctx.nextGw === null) return null;
+  const window = (ctx.upcomingByTeam[teamId] ?? []).filter(
+    (f) => f.event < (ctx.nextGw as number) + horizon,
+  );
+  if (window.length === 0) return null;
+  return window.reduce((s, f) => s + (5 - f.difficulty) / 4, 0) / window.length;
+}
+
+// --- Points values by position ---
+
+const GOAL_PTS: Record<Position, number> = { 1: 10, 2: 6, 3: 5, 4: 4 };
+const CS_PTS: Record<Position, number> = { 1: 4, 2: 4, 3: 1, 4: 0 };
+/** Defensive-contribution thresholds per match (2025/26 rule): DEF 10 CBIT, MID/FWD 12 CBIRT. */
+const DC_THRESHOLD: Record<Position, number> = { 1: Infinity, 2: 10, 3: 12, 4: 12 };
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/** Per-player rates precomputed once, independent of fixture. */
+interface Rates {
+  m: number; // expected share of 90 minutes when fit
+  p60: number;
+  pApp: number;
+  xg90: number;
+  xa90: number;
+  saves90: number;
+  dc90: number;
+  bonusPerMatch: number;
+  concededPerMatch: number;
+  baseAvailability: number;
+}
+
+function buildRates(p: Player, ctx: ProjectionContext): Rates {
+  const teamGames = ctx.gamesPlayed[p.team] ?? 0;
+  // Season average minutes per team match. Understates players who arrived or
+  // became starters mid-season — the accepted trade-off for using one API call.
+  const xMins = teamGames > 0 ? p.minutes / teamGames : 0;
+  const m = clamp(xMins / 90, 0, 1);
+  return {
+    m,
+    p60: clamp((xMins - 25) / 50, 0, 1),
+    pApp: clamp(xMins / 45, 0, 1),
+    xg90: p.expected_goals_per_90 || 0,
+    xa90: p.expected_assists_per_90 || 0,
+    saves90: p.saves_per_90 || 0,
+    dc90: p.defensive_contribution_per_90 || 0,
+    bonusPerMatch: p.minutes > 0 ? p.bonus / Math.max(1, p.minutes / 90) : 0,
+    concededPerMatch: ctx.concededPerMatch[p.team] ?? 1.3,
+    baseAvailability: baseAvailability(p),
+  };
+}
+
+function baseAvailability(p: Player): number {
+  if (p.status === "a") return 1;
+  if (p.status === "d") return (p.chance_of_playing_next_round ?? 75) / 100;
+  return 0.1;
+}
+
+/**
+ * Availability `gwsAhead` gameweeks from now. Doubtful/injured/suspended
+ * players are assumed back to full availability within ~4 GWs — a horizon
+ * model must not write off a star with a knock. Players who left the league
+ * or are unregistered ('u'/'n') never recover.
+ */
+export function availabilityAt(p: Player, base: number, gwsAhead: number): number {
+  if (p.status === "u" || p.status === "n") return base;
+  return base + (1 - base) * clamp(gwsAhead / 4, 0, 1);
+}
+
+/** Expected points for one match at the given difficulty (FDR 1–5, 3 = neutral). */
+function epForMatch(p: Player, r: Rates, fdr: number): number {
+  const pos = p.element_type;
+  // Easier fixture → more attacking output, fewer goals conceded.
+  const attackMult = 1 + (3 - fdr) * 0.12;
+  const lambda = r.concededPerMatch * (1 + (fdr - 3) * 0.15);
+
+  const appearance = r.pApp + r.p60;
+  const attack = (r.xg90 * GOAL_PTS[pos] + r.xa90 * 3) * r.m * attackMult;
+  const cleanSheet = CS_PTS[pos] * r.p60 * Math.exp(-lambda);
+  // -1 per 2 conceded while on the pitch (GK/DEF); 0.5/goal approximates the floor.
+  const concededPts = pos <= 2 ? -0.5 * lambda * r.m : 0;
+  const saves = pos === 1 ? (r.saves90 * r.m) / 3 : 0;
+  // P(hitting the DC threshold) from the per-match action rate: 0 at half the
+  // threshold, ~0.65 at the threshold, capped at 0.9.
+  const dcRate = r.dc90 * r.m;
+  const dc = 2 * clamp((1.4 * dcRate) / DC_THRESHOLD[pos] - 0.75, 0, 0.9);
+
+  return appearance + attack + cleanSheet + concededPts + saves + dc + r.bonusPerMatch * r.m;
+}
+
+export interface GwProjection {
+  gw: number;
+  ep: number;
+  fixtures: UpcomingFixture[];
+}
+
+export interface PlayerProjection {
+  player: Player;
+  /** Expected minutes per match when fit */
+  xMins: number;
+  /** xPts for a single neutral-difficulty match at full availability */
+  epPerMatch: number;
+  /** xPts per gameweek from nextGw, availability- and fixture-adjusted */
+  perGw: GwProjection[];
+  /** Sum of perGw over the requested horizon */
+  horizonEp: number;
+}
+
+/**
+ * Project all `players` over the next `horizon` gameweeks. When the game is
+ * between seasons (no fixtures), perGw is empty and horizonEp falls back to
+ * epPerMatch × horizon so rankings still work.
+ */
+export function projectPlayers(
+  players: Player[],
+  ctx: ProjectionContext,
+  horizon: number,
+): Map<number, PlayerProjection> {
+  const out = new Map<number, PlayerProjection>();
+  for (const p of players) {
+    const r = buildRates(p, ctx);
+    const epPerMatch = epForMatch(p, r, 3);
+
+    const perGw: GwProjection[] = [];
+    if (ctx.nextGw !== null) {
+      const end = Math.min(ctx.nextGw + horizon - 1, ctx.lastGw);
+      const byGw = new Map<number, UpcomingFixture[]>();
+      for (const f of ctx.upcomingByTeam[p.team] ?? []) {
+        if (f.event > end) continue;
+        if (!byGw.has(f.event)) byGw.set(f.event, []);
+        byGw.get(f.event)!.push(f);
+      }
+      for (let gw = ctx.nextGw; gw <= end; gw++) {
+        const fx = byGw.get(gw) ?? [];
+        const avail = availabilityAt(p, r.baseAvailability, gw - ctx.nextGw);
+        const ep = fx.reduce((s, f) => s + epForMatch(p, r, f.difficulty) * avail, 0);
+        perGw.push({ gw, ep: round1(ep), fixtures: fx });
+      }
+    }
+
+    const horizonEp =
+      ctx.nextGw !== null
+        ? perGw.reduce((s, g) => s + g.ep, 0)
+        : epPerMatch * r.baseAvailability * horizon;
+
+    out.set(p.id, {
+      player: p,
+      xMins: Math.round(r.m * 90),
+      epPerMatch: round1(epPerMatch),
+      perGw,
+      horizonEp: round1(horizonEp),
+    });
+  }
+  return out;
+}
+
+function round1(n: number) {
+  return Math.round(n * 10) / 10;
+}
+
+/** A transfer is worth a -4 hit when it gains more than 4 xPts over the horizon. */
+export const HIT_COST = 4;
+
+export interface Upgrade {
+  candidate: PlayerProjection;
+  deltaEp: number;
+  worthAHit: boolean;
+}
+
+/**
+ * Best replacements for `outgoing` by xPts gained over the horizon. Enforces
+ * same position, budget (price + bank), not already owned, max 3 per club,
+ * and a minutes floor so bench fodder isn't suggested.
+ */
+export function findUpgrades(
+  outgoing: PlayerProjection,
+  market: Map<number, PlayerProjection>,
+  squadIds: Set<number>,
+  teamCounts: Record<number, number>,
+  budgetTenths: number,
+  limit = 3,
+): Upgrade[] {
+  const p = outgoing.player;
+  const countExcludingOutgoing = (team: number) =>
+    (teamCounts[team] ?? 0) - (team === p.team ? 1 : 0);
+
+  return [...market.values()]
+    .filter(
+      (c) =>
+        c.player.element_type === p.element_type &&
+        !squadIds.has(c.player.id) &&
+        c.player.now_cost <= budgetTenths &&
+        c.horizonEp > outgoing.horizonEp &&
+        c.xMins >= 45 &&
+        c.player.status !== "u" &&
+        c.player.status !== "n" &&
+        countExcludingOutgoing(c.player.team) < 3,
+    )
+    .sort((a, b) => b.horizonEp - a.horizonEp)
+    .slice(0, limit)
+    .map((c) => {
+      const deltaEp = round1(c.horizonEp - outgoing.horizonEp);
+      return { candidate: c, deltaEp, worthAHit: deltaEp > HIT_COST };
+    });
+}

@@ -2,25 +2,24 @@
 
 import { useMemo } from "react";
 import TeamIdGate from "@/components/TeamIdGate";
-import { ErrorNote, Loading, ScoreBar, SeasonBanner, StatusBadge } from "@/components/ui";
+import { ErrorNote, Loading, SeasonBanner, StatusBadge } from "@/components/ui";
 import { money } from "@/lib/format";
 import {
-  buildFixtureContext,
+  buildProjectionContext,
   findUpgrades,
-  scorePlayers,
-  TRANSFER_WEIGHTS,
-  type Scored,
-} from "@/lib/scoring";
+  HIT_COST,
+  projectPlayers,
+  type PlayerProjection,
+  type Upgrade,
+} from "@/lib/projection";
 import type { Bootstrap, EntryData, Fixture } from "@/lib/types";
 import { POSITION_NAMES } from "@/lib/types";
 import { useBootstrap, useEntry, useFixtures } from "@/lib/useFpl";
 
-const FIXTURE_HORIZON = 5;
+const HORIZON = 5;
 
 export default function TransfersPage() {
-  return (
-    <TeamIdGate>{(teamId) => <Transfers teamId={teamId} />}</TeamIdGate>
-  );
+  return <TeamIdGate>{(teamId) => <Transfers teamId={teamId} />}</TeamIdGate>;
 }
 
 function Transfers({ teamId }: { teamId: number }) {
@@ -34,11 +33,7 @@ function Transfers({ teamId }: { teamId: number }) {
     return <Loading what="transfer analysis" />;
 
   return (
-    <Analysis
-      bootstrap={bootstrap.data}
-      fixtures={fixtures.data}
-      entry={entry.data}
-    />
+    <Analysis bootstrap={bootstrap.data} fixtures={fixtures.data} entry={entry.data} />
   );
 }
 
@@ -53,13 +48,8 @@ function Analysis({
 }) {
   const analysis = useMemo(() => {
     if (!entry.picks) return null;
-    const ctx = buildFixtureContext(fixtures, bootstrap.events);
-    const market = scorePlayers(
-      bootstrap.players,
-      ctx,
-      TRANSFER_WEIGHTS,
-      FIXTURE_HORIZON,
-    );
+    const ctx = buildProjectionContext(fixtures, bootstrap.events, bootstrap.teams);
+    const market = projectPlayers(bootstrap.players, ctx, HORIZON);
 
     const squadIds = new Set(entry.picks.map((p) => p.element));
     const teamCounts: Record<number, number> = {};
@@ -72,21 +62,20 @@ function Analysis({
     // Squad ranked worst-first: the top of the list is who to consider selling.
     const squad = [...squadIds]
       .map((id) => market.get(id))
-      .filter((s): s is Scored => s !== undefined)
-      .sort((a, b) => a.score - b.score);
+      .filter((s): s is PlayerProjection => s !== undefined)
+      .sort((a, b) => a.horizonEp - b.horizonEp);
 
     const rows = squad.map((s) => ({
       out: s,
-      upgrades: findUpgrades(
-        s,
-        market,
-        squadIds,
-        teamCounts,
-        s.player.now_cost + bank,
-      ),
+      upgrades: findUpgrades(s, market, squadIds, teamCounts, s.player.now_cost + bank),
     }));
 
-    return { rows, bank };
+    // Best single move overall — the "if you only do one thing" answer.
+    const bestMove = rows
+      .flatMap((r) => r.upgrades.map((u) => ({ out: r.out, u })))
+      .sort((a, b) => b.u.deltaEp - a.u.deltaEp)[0];
+
+    return { rows, bank, bestMove, ctx };
   }, [bootstrap, fixtures, entry]);
 
   if (!analysis)
@@ -104,11 +93,29 @@ function Analysis({
       <SeasonBanner events={bootstrap.events} />
       <h1 className="text-xl font-semibold tracking-tight">Transfer suggestions</h1>
       <p className="mt-1 mb-4 text-sm text-ink-2">
-        Your squad ranked weakest-first by a blend of points per game, form,
-        expected points, fixture ease (next {FIXTURE_HORIZON} GWs) and value.
-        Budget per swap = player price + {money(analysis.bank)} in the bank.
-        Prices use current market value, not your personal selling price.
+        Everything below is projected points (xPts) over the next {HORIZON}{" "}
+        gameweeks — built from xG/xA per 90, projected minutes, clean-sheet
+        odds, and fixture difficulty. A move is worth a −{HIT_COST} hit only if
+        it gains more than {HIT_COST} xPts. Prices are market values, not your
+        personal selling prices.
       </p>
+
+      {analysis.bestMove && (
+        <div className="card mb-4 border-accent/40 px-4 py-3 text-sm">
+          <span className="font-medium">Best single move: </span>
+          {analysis.bestMove.out.player.web_name} →{" "}
+          {analysis.bestMove.u.candidate.player.web_name}{" "}
+          <span className="text-good font-medium">
+            +{analysis.bestMove.u.deltaEp} xPts
+          </span>
+          <span className="text-ink-2"> over {HORIZON} GWs</span>
+          {analysis.bestMove.u.worthAHit && (
+            <span className="ml-2 rounded bg-accent px-1.5 py-0.5 text-[10px] font-semibold text-accent-ink">
+              worth a hit
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="space-y-3">
         {analysis.rows.map(({ out, upgrades }) => (
@@ -117,14 +124,18 @@ function Analysis({
               <span className="w-10 text-xs text-muted">
                 {POSITION_NAMES[out.player.element_type]}
               </span>
-              <span className="min-w-32 font-medium">
+              <span className="min-w-40 font-medium">
                 {out.player.web_name}
                 <span className="ml-1.5 text-xs text-ink-2">
-                  {shortName(out.player.team)} · {money(out.player.now_cost)}
+                  {shortName(out.player.team)} · {money(out.player.now_cost)} ·{" "}
+                  {out.xMins}′
                 </span>
                 <StatusBadge player={out.player} />
               </span>
-              <ScoreBar score={out.score} />
+              <span className="text-sm tabular-nums">
+                <span className="font-semibold">{out.horizonEp}</span>
+                <span className="text-xs text-muted"> xPts / {HORIZON} GWs</span>
+              </span>
               <span className="ml-auto text-xs text-accent">
                 {upgrades.length > 0
                   ? `${upgrades.length} upgrade${upgrades.length > 1 ? "s" : ""} ▸`
@@ -133,47 +144,67 @@ function Analysis({
             </summary>
             {upgrades.length > 0 && (
               <div className="overflow-x-auto border-t border-grid px-4 py-2">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Buy instead</th>
-                      <th>Team</th>
-                      <th className="num">Price</th>
-                      <th className="num">Δ cost</th>
-                      <th className="num">Points</th>
-                      <th className="num">Owned</th>
-                      <th>Score</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {upgrades.map((u) => (
-                      <tr key={u.player.id}>
-                        <td className="font-medium">
-                          {u.player.web_name}
-                          <StatusBadge player={u.player} />
-                        </td>
-                        <td className="text-ink-2">{shortName(u.player.team)}</td>
-                        <td className="num">{money(u.player.now_cost)}</td>
-                        <td className="num text-ink-2">
-                          {u.player.now_cost > out.player.now_cost ? "+" : ""}
-                          {((u.player.now_cost - out.player.now_cost) / 10).toFixed(1)}
-                        </td>
-                        <td className="num">{u.player.total_points}</td>
-                        <td className="num text-ink-2">
-                          {u.player.selected_by_percent}%
-                        </td>
-                        <td>
-                          <ScoreBar score={u.score} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <UpgradeTable upgrades={upgrades} out={out} shortName={shortName} />
               </div>
             )}
           </details>
         ))}
       </div>
     </div>
+  );
+}
+
+function UpgradeTable({
+  upgrades,
+  out,
+  shortName,
+}: {
+  upgrades: Upgrade[];
+  out: PlayerProjection;
+  shortName: (id: number) => string;
+}) {
+  return (
+    <table className="data-table">
+      <thead>
+        <tr>
+          <th>Buy instead</th>
+          <th>Team</th>
+          <th className="num">Price</th>
+          <th className="num">Δ cost</th>
+          <th className="num">Mins</th>
+          <th className="num">xPts</th>
+          <th className="num">Δ xPts</th>
+          <th>Hit?</th>
+        </tr>
+      </thead>
+      <tbody>
+        {upgrades.map(({ candidate: c, deltaEp, worthAHit }) => (
+          <tr key={c.player.id}>
+            <td className="font-medium">
+              {c.player.web_name}
+              <StatusBadge player={c.player} />
+            </td>
+            <td className="text-ink-2">{shortName(c.player.team)}</td>
+            <td className="num">{money(c.player.now_cost)}</td>
+            <td className="num text-ink-2">
+              {c.player.now_cost > out.player.now_cost ? "+" : ""}
+              {((c.player.now_cost - out.player.now_cost) / 10).toFixed(1)}
+            </td>
+            <td className="num text-ink-2">{c.xMins}′</td>
+            <td className="num font-semibold">{c.horizonEp}</td>
+            <td className="num font-medium text-good">+{deltaEp}</td>
+            <td>
+              {worthAHit ? (
+                <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-semibold text-accent-ink">
+                  worth −4
+                </span>
+              ) : (
+                <span className="text-xs text-muted">only if free</span>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

@@ -153,7 +153,7 @@ function SquadTable({
         <td className="num">{money(p.now_cost)}</td>
         <td className="num font-medium">{p.total_points}</td>
         <td className="num">{p.points_per_game}</td>
-        <td className="num">{p.form}</td>
+        <td className="num">{p.expected_goal_involvements_per_90.toFixed(2)}</td>
         <td className="num text-ink-2">{p.selected_by_percent}%</td>
       </tr>
     );
@@ -167,7 +167,7 @@ function SquadTable({
       <th className="num">Price</th>
       <th className="num">Points</th>
       <th className="num">PPG</th>
-      <th className="num">Form</th>
+      <th className="num">xGI/90</th>
       <th className="num">Owned</th>
     </tr>
   );

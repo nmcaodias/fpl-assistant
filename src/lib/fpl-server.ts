@@ -39,6 +39,7 @@ interface RawBootstrap {
   events: Record<string, unknown>[];
   teams: Record<string, unknown>[];
   elements: Record<string, unknown>[];
+  chips?: Record<string, unknown>[];
 }
 
 const PLAYER_FIELDS = [
@@ -63,7 +64,17 @@ const PLAYER_FIELDS = [
   "clean_sheets",
   "bonus",
   "starts",
+  "expected_goals",
+  "expected_assists",
+  "expected_goal_involvements",
+  "expected_goals_per_90",
+  "expected_assists_per_90",
+  "expected_goal_involvements_per_90",
+  "saves_per_90",
+  "defensive_contribution_per_90",
 ] as const;
+
+const CHIP_FIELDS = ["id", "name", "start_event", "stop_event", "number"] as const;
 
 const TEAM_FIELDS = ["id", "name", "short_name", "strength"] as const;
 
@@ -88,6 +99,7 @@ export async function getBootstrap() {
     players: raw.elements.map((e) => pick(e, PLAYER_FIELDS)),
     teams: raw.teams.map((t) => pick(t, TEAM_FIELDS)),
     events: raw.events.map((e) => pick(e, EVENT_FIELDS)),
+    chips: (raw.chips ?? []).map((c) => pick(c, CHIP_FIELDS)),
   };
 }
 
