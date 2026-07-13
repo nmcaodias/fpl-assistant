@@ -1,0 +1,351 @@
+import { describe, expect, it } from "vitest";
+import {
+  availabilityAt,
+  buildProjectionContext,
+  findUpgrades,
+  fixtureEase,
+  HIT_COST,
+  projectPlayers,
+} from "./projection";
+import { makeEvent, makeFixture, makePlayer, makeTeam } from "./test-factories";
+
+describe("buildProjectionContext", () => {
+  it("picks the event flagged is_next", () => {
+    const events = [
+      makeEvent({ id: 1, finished: true }),
+      makeEvent({ id: 2, finished: false, is_next: true }),
+      makeEvent({ id: 3, finished: false }),
+    ];
+    const ctx = buildProjectionContext([], events, []);
+    expect(ctx.nextGw).toBe(2);
+  });
+
+  it("falls back to the first unfinished event when none is flagged is_next", () => {
+    const events = [
+      makeEvent({ id: 1, finished: true }),
+      makeEvent({ id: 2, finished: false }),
+      makeEvent({ id: 3, finished: false }),
+    ];
+    const ctx = buildProjectionContext([], events, []);
+    expect(ctx.nextGw).toBe(2);
+  });
+
+  it("marks the season finished when every event is finished", () => {
+    const events = [makeEvent({ id: 1, finished: true }), makeEvent({ id: 2, finished: true })];
+    const ctx = buildProjectionContext([], events, []);
+    expect(ctx.nextGw).toBeNull();
+    expect(ctx.seasonFinished).toBe(true);
+  });
+
+  it("uses the max event id for lastGw, defaulting to 38 with no events", () => {
+    expect(buildProjectionContext([], [], []).lastGw).toBe(38);
+    expect(
+      buildProjectionContext([], [makeEvent({ id: 5 }), makeEvent({ id: 12 })], []).lastGw,
+    ).toBe(12);
+  });
+
+  it("builds per-team upcoming fixtures sorted by event, excluding finished and past ones", () => {
+    const events = [makeEvent({ id: 2, is_next: true })];
+    const fixtures = [
+      makeFixture({ id: 1, event: 1, team_h: 10, team_a: 20, finished: true }),
+      makeFixture({
+        id: 2,
+        event: 3,
+        team_h: 10,
+        team_a: 20,
+        team_h_difficulty: 4,
+        team_a_difficulty: 2,
+      }),
+      makeFixture({
+        id: 3,
+        event: 2,
+        team_h: 20,
+        team_a: 10,
+        team_h_difficulty: 5,
+        team_a_difficulty: 1,
+      }),
+    ];
+    const ctx = buildProjectionContext(fixtures, events, []);
+
+    expect(ctx.upcomingByTeam[10]).toEqual([
+      { event: 2, opponent: 20, isHome: false, difficulty: 1 },
+      { event: 3, opponent: 20, isHome: true, difficulty: 4 },
+    ]);
+    expect(ctx.upcomingByTeam[20]).toEqual([
+      { event: 2, opponent: 10, isHome: true, difficulty: 5 },
+      { event: 3, opponent: 10, isHome: false, difficulty: 2 },
+    ]);
+  });
+
+  it("computes conceded-per-match from finished fixtures with scores", () => {
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const teams = [makeTeam({ id: 10 }), makeTeam({ id: 20 }), makeTeam({ id: 30 })];
+    const fixtures = [
+      makeFixture({ team_h: 10, team_a: 20, finished: true, team_h_score: 1, team_a_score: 3 }),
+      makeFixture({ team_h: 20, team_a: 10, finished: true, team_h_score: 0, team_a_score: 0 }),
+      // Unfinished fixture with scores should be ignored.
+      makeFixture({ team_h: 10, team_a: 20, finished: false, team_h_score: 5, team_a_score: 5 }),
+    ];
+    const ctx = buildProjectionContext(fixtures, events, teams);
+
+    // Team 10 conceded 3 (as home) + 0 (as away) over 2 games = 1.5
+    expect(ctx.concededPerMatch[10]).toBe(1.5);
+    // Team 20 conceded 1 + 0 over 2 games = 0.5
+    expect(ctx.concededPerMatch[20]).toBe(0.5);
+    // Team 30 played no finished games -> league-average prior
+    expect(ctx.concededPerMatch[30]).toBe(1.3);
+  });
+
+  it("ignores finished fixtures missing a score", () => {
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const teams = [makeTeam({ id: 10 })];
+    const fixtures = [
+      makeFixture({ team_h: 10, team_a: 20, finished: true, team_h_score: null, team_a_score: null }),
+    ];
+    const ctx = buildProjectionContext(fixtures, events, teams);
+    expect(ctx.gamesPlayed[10] ?? 0).toBe(0);
+    expect(ctx.concededPerMatch[10]).toBe(1.3);
+  });
+});
+
+describe("fixtureEase", () => {
+  it("returns null once the season has finished", () => {
+    const ctx = buildProjectionContext([], [makeEvent({ id: 1, finished: true })], []);
+    expect(fixtureEase(ctx, 10, 5)).toBeNull();
+  });
+
+  it("returns null when the team has no fixtures in the window", () => {
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const ctx = buildProjectionContext([], events, []);
+    expect(fixtureEase(ctx, 10, 5)).toBeNull();
+  });
+
+  it("averages (5 - difficulty) / 4 over fixtures within the horizon", () => {
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const fixtures = [
+      makeFixture({ event: 1, team_h: 10, team_a: 20, team_h_difficulty: 2 }),
+      makeFixture({ event: 2, team_h: 10, team_a: 20, team_h_difficulty: 4 }),
+      // Outside a horizon of 2 starting at GW1 (event < 1 + 2 = 3 passes; use GW4 to exclude)
+      makeFixture({ event: 4, team_h: 10, team_a: 20, team_h_difficulty: 5 }),
+    ];
+    const ctx = buildProjectionContext(fixtures, events, []);
+    // (5-2)/4 = 0.75, (5-4)/4 = 0.25 -> average 0.5
+    expect(fixtureEase(ctx, 10, 2)).toBeCloseTo(0.5, 5);
+  });
+});
+
+describe("availabilityAt", () => {
+  it("returns the base availability immediately (0 gameweeks ahead)", () => {
+    expect(availabilityAt(makePlayer({ status: "d" }), 0.75, 0)).toBeCloseTo(0.75, 5);
+  });
+
+  it("recovers doubtful/injured players linearly to full fitness by 4 gameweeks", () => {
+    const base = 0.5;
+    const player = makePlayer({ status: "i" });
+    expect(availabilityAt(player, base, 2)).toBeCloseTo(0.5 + 0.5 * 0.5, 5);
+    expect(availabilityAt(player, base, 4)).toBeCloseTo(1, 5);
+    expect(availabilityAt(player, base, 10)).toBeCloseTo(1, 5); // clamped, doesn't exceed 1
+  });
+
+  it("never recovers players who are unregistered ('u') or not in the squad ('n')", () => {
+    expect(availabilityAt(makePlayer({ status: "u" }), 0.1, 10)).toBe(0.1);
+    expect(availabilityAt(makePlayer({ status: "n" }), 0.1, 10)).toBe(0.1);
+  });
+});
+
+describe("projectPlayers", () => {
+  it("computes epPerMatch from underlying rates for a fully available, fully-minuted player", () => {
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const player = makePlayer({
+      team: 30, // no finished games -> 1.3 default conceded/match
+      element_type: 3,
+      status: "a",
+      minutes: 90,
+      expected_goals_per_90: 0.5,
+      expected_assists_per_90: 0.2,
+      bonus: 0.3,
+      defensive_contribution_per_90: 0,
+    });
+    const ctx = buildProjectionContext([], events, []);
+    // One finished game so xMins = minutes / gamesPlayed = 90 / 1 = 90.
+    ctx.gamesPlayed[30] = 1;
+
+    const proj = projectPlayers([player], ctx, 5);
+    const p = proj.get(player.id)!;
+    expect(p.xMins).toBe(90);
+    expect(p.epPerMatch).toBeCloseTo(5.7, 5);
+  });
+
+  it("falls back to epPerMatch × horizon when the season has no more fixtures", () => {
+    const events = [makeEvent({ id: 1, finished: true })]; // no next GW
+    const player = makePlayer({ status: "a", minutes: 90 });
+    const ctx = buildProjectionContext([], events, []);
+    ctx.gamesPlayed[player.team] = 1;
+
+    const proj = projectPlayers([player], ctx, 5);
+    const p = proj.get(player.id)!;
+    expect(p.perGw).toEqual([]);
+    // horizonEp is rounded from the unrounded epPerMatch × horizon, so it can
+    // differ slightly from epPerMatch (already rounded) × horizon.
+    expect(p.horizonEp).toBeCloseTo(p.epPerMatch * 5, 0);
+  });
+
+  it("sums both fixtures of a double gameweek", () => {
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const player = makePlayer({ team: 10, status: "a", minutes: 90 });
+    const fixtures = [
+      makeFixture({ event: 1, team_h: 10, team_a: 20 }),
+      makeFixture({ event: 1, team_h: 30, team_a: 10 }),
+    ];
+    const ctx = buildProjectionContext(fixtures, events, []);
+    ctx.gamesPlayed[10] = 1;
+
+    const proj = projectPlayers([player], ctx, 1);
+    const p = proj.get(player.id)!;
+    expect(p.perGw).toHaveLength(1);
+    expect(p.perGw[0].fixtures).toHaveLength(2);
+    // A double gameweek should be worth roughly double a single one.
+    expect(p.perGw[0].ep).toBeGreaterThan(p.epPerMatch * 1.5);
+  });
+
+  it("gives zero ep for a blank gameweek (no fixtures)", () => {
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const player = makePlayer({ team: 10, status: "a", minutes: 90 });
+    const fixtures = [makeFixture({ event: 2, team_h: 10, team_a: 20 })]; // nothing in GW1
+    const ctx = buildProjectionContext(fixtures, events, []);
+    ctx.gamesPlayed[10] = 1;
+
+    const proj = projectPlayers([player], ctx, 1);
+    expect(proj.get(player.id)!.perGw[0].ep).toBe(0);
+  });
+
+  it("stops projecting at the season's last gameweek even if the horizon extends beyond it", () => {
+    const events = [makeEvent({ id: 37, is_next: true }), makeEvent({ id: 38 })];
+    const player = makePlayer({ team: 10, status: "a", minutes: 90 });
+    const ctx = buildProjectionContext([], events, []);
+    ctx.gamesPlayed[10] = 1;
+
+    const proj = projectPlayers([player], ctx, 10);
+    const gws = proj.get(player.id)!.perGw.map((g) => g.gw);
+    expect(gws).toEqual([37, 38]);
+  });
+
+  it("projects lower ep for a harder fixture than an easier one", () => {
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const player = makePlayer({ team: 10, status: "a", minutes: 90, expected_goals_per_90: 0.6 });
+    const easy = buildProjectionContext(
+      [makeFixture({ event: 1, team_h: 10, team_a: 20, team_h_difficulty: 1, team_a_difficulty: 1 })],
+      events,
+      [],
+    );
+    const hard = buildProjectionContext(
+      [makeFixture({ event: 1, team_h: 10, team_a: 20, team_h_difficulty: 5, team_a_difficulty: 5 })],
+      events,
+      [],
+    );
+    easy.gamesPlayed[10] = 1;
+    hard.gamesPlayed[10] = 1;
+
+    const epEasy = projectPlayers([player], easy, 1).get(player.id)!.perGw[0].ep;
+    const epHard = projectPlayers([player], hard, 1).get(player.id)!.perGw[0].ep;
+    expect(epEasy).toBeGreaterThan(epHard);
+  });
+});
+
+describe("findUpgrades", () => {
+  function projectionFor(player: ReturnType<typeof makePlayer>, horizonEp: number, xMins = 90) {
+    return {
+      player,
+      xMins,
+      epPerMatch: horizonEp,
+      perGw: [],
+      horizonEp,
+    };
+  }
+
+  it("only proposes same-position players that project more xPts", () => {
+    const outgoing = projectionFor(makePlayer({ id: 1, element_type: 3, now_cost: 80 }), 10);
+    const market = new Map([
+      [2, projectionFor(makePlayer({ id: 2, element_type: 3, now_cost: 80 }), 15)],
+      [3, projectionFor(makePlayer({ id: 3, element_type: 4, now_cost: 80 }), 20)], // wrong position
+      [4, projectionFor(makePlayer({ id: 4, element_type: 3, now_cost: 80 }), 5)], // worse
+    ]);
+    const upgrades = findUpgrades(outgoing, market, new Set([1]), {}, 100);
+    expect(upgrades.map((u) => u.candidate.player.id)).toEqual([2]);
+  });
+
+  it("excludes players already in the squad", () => {
+    const outgoing = projectionFor(makePlayer({ id: 1, element_type: 3, now_cost: 80 }), 10);
+    const market = new Map([
+      [2, projectionFor(makePlayer({ id: 2, element_type: 3, now_cost: 80 }), 15)],
+    ]);
+    const upgrades = findUpgrades(outgoing, market, new Set([1, 2]), {}, 100);
+    expect(upgrades).toEqual([]);
+  });
+
+  it("excludes candidates over budget (price + bank)", () => {
+    const outgoing = projectionFor(makePlayer({ id: 1, element_type: 3, now_cost: 80 }), 10);
+    const market = new Map([
+      [2, projectionFor(makePlayer({ id: 2, element_type: 3, now_cost: 120 }), 15)],
+    ]);
+    expect(findUpgrades(outgoing, market, new Set([1]), {}, 100)).toEqual([]);
+    expect(
+      findUpgrades(outgoing, market, new Set([1]), {}, 120).map((u) => u.candidate.player.id),
+    ).toEqual([2]);
+  });
+
+  it("excludes bench fodder under the 45-minute floor", () => {
+    const outgoing = projectionFor(makePlayer({ id: 1, element_type: 3, now_cost: 80 }), 10);
+    const market = new Map([
+      [2, projectionFor(makePlayer({ id: 2, element_type: 3, now_cost: 80 }), 15, 30)],
+    ]);
+    expect(findUpgrades(outgoing, market, new Set([1]), {}, 100)).toEqual([]);
+  });
+
+  it("excludes unavailable ('u') and unregistered ('n') candidates", () => {
+    const outgoing = projectionFor(makePlayer({ id: 1, element_type: 3, now_cost: 80 }), 10);
+    const market = new Map([
+      [2, projectionFor(makePlayer({ id: 2, element_type: 3, now_cost: 80, status: "u" }), 15)],
+      [3, projectionFor(makePlayer({ id: 3, element_type: 3, now_cost: 80, status: "n" }), 15)],
+    ]);
+    expect(findUpgrades(outgoing, market, new Set([1]), {}, 100)).toEqual([]);
+  });
+
+  it("caps replacements at 3 per club, excluding the outgoing player's own slot", () => {
+    const outgoingPlayer = makePlayer({ id: 1, element_type: 3, now_cost: 80, team: 99 });
+    const outgoing = projectionFor(outgoingPlayer, 10);
+    const market = new Map([
+      [2, projectionFor(makePlayer({ id: 2, element_type: 3, now_cost: 80, team: 99 }), 15)],
+    ]);
+    // Squad already has 3 players from team 99, including the outgoing one -> room for 1 more.
+    expect(
+      findUpgrades(outgoing, market, new Set([1]), { 99: 3 }, 100).map((u) => u.candidate.player.id),
+    ).toEqual([2]);
+    // Squad has 3 players from team 99 *besides* the outgoing one -> no room.
+    expect(findUpgrades(outgoing, market, new Set([1]), { 99: 4 }, 100)).toEqual([]);
+  });
+
+  it("sorts by horizonEp descending and respects the limit", () => {
+    const outgoing = projectionFor(makePlayer({ id: 1, element_type: 3, now_cost: 80 }), 10);
+    const market = new Map([
+      [2, projectionFor(makePlayer({ id: 2, element_type: 3, now_cost: 80 }), 12)],
+      [3, projectionFor(makePlayer({ id: 3, element_type: 3, now_cost: 80 }), 20)],
+      [4, projectionFor(makePlayer({ id: 4, element_type: 3, now_cost: 80 }), 16)],
+    ]);
+    const upgrades = findUpgrades(outgoing, market, new Set([1]), {}, 100, 2);
+    expect(upgrades.map((u) => u.candidate.player.id)).toEqual([3, 4]);
+  });
+
+  it("flags a hit as worthwhile only when the gain exceeds HIT_COST", () => {
+    const outgoing = projectionFor(makePlayer({ id: 1, element_type: 3, now_cost: 80 }), 10);
+    const market = new Map([
+      [2, projectionFor(makePlayer({ id: 2, element_type: 3, now_cost: 80 }), 10 + HIT_COST)],
+      [3, projectionFor(makePlayer({ id: 3, element_type: 3, now_cost: 80 }), 10 + HIT_COST + 0.1)],
+    ]);
+    const upgrades = findUpgrades(outgoing, market, new Set([1]), {}, 100);
+    const notWorth = upgrades.find((u) => u.candidate.player.id === 2)!;
+    const worth = upgrades.find((u) => u.candidate.player.id === 3)!;
+    expect(notWorth.worthAHit).toBe(false); // exactly HIT_COST is not "more than"
+    expect(worth.worthAHit).toBe(true);
+  });
+});
