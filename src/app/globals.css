@@ -1,26 +1,119 @@
 @import "tailwindcss";
 
+/* Design tokens (light), from the validated reference palette. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --surface: #fcfcfb;
+  --plane: #f9f9f7;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --baseline: #c3c2b7;
+  --hairline: rgba(11, 11, 11, 0.1);
+
+  --accent: #2a78d6;
+  --accent-ink: #ffffff;
+  --good: #006300;
+  --bad: #d03b3b;
+
+  /* FDR diverging scale: blue (easy) ↔ neutral ↔ red (hard).
+     Each fill is paired with an ink that clears text contrast on it. */
+  --fdr1: #1c5cab;
+  --fdr1-ink: #ffffff;
+  --fdr2: #9ec5f4;
+  --fdr2-ink: #0b0b0b;
+  --fdr3: #f0efec;
+  --fdr3-ink: #52514e;
+  --fdr4: #f2b8b6;
+  --fdr4-ink: #0b0b0b;
+  --fdr5: #d03b3b;
+  --fdr5-ink: #ffffff;
+}
+
+/* Dark mode: steps selected for the dark surface, not an automatic flip. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #1a1a19;
+    --plane: #0d0d0d;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --baseline: #383835;
+    --hairline: rgba(255, 255, 255, 0.1);
+
+    --accent: #3987e5;
+    --accent-ink: #0b0b0b;
+    --good: #0ca30c;
+    --bad: #e66767;
+
+    --fdr1: #3987e5;
+    --fdr1-ink: #0b0b0b;
+    --fdr2: #1f4d80;
+    --fdr2-ink: #ffffff;
+    --fdr3: #383835;
+    --fdr3-ink: #c3c2b7;
+    --fdr4: #6e2b29;
+    --fdr4-ink: #ffffff;
+    --fdr5: #e66767;
+    --fdr5-ink: #0b0b0b;
+  }
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-plane: var(--plane);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-grid: var(--grid);
+  --color-baseline: var(--baseline);
+  --color-hairline: var(--hairline);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-good: var(--good);
+  --color-bad: var(--bad);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+body {
+  background: var(--plane);
+  color: var(--ink);
+  font-family: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Card: the standard content surface. */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+}
+
+/* Data tables: recessive chrome, tabular figures for number columns. */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+.data-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--grid);
+  white-space: nowrap;
+}
+.data-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--grid);
+  white-space: nowrap;
+}
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+.data-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
