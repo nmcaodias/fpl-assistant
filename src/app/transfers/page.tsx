@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import TeamIdGate from "@/components/TeamIdGate";
-import { ErrorNote, Loading, SeasonBanner, StatusBadge } from "@/components/ui";
+import { ErrorNote, FormBadge, Loading, SeasonBanner, StatusBadge } from "@/components/ui";
 import { money } from "@/lib/format";
 import {
   buildProjectionContext,
@@ -131,6 +131,7 @@ function Analysis({
                   {out.xMins}′
                 </span>
                 <StatusBadge player={out.player} />
+                <FormBadge form={out.form} />
               </span>
               <span className="text-sm tabular-nums">
                 <span className="font-semibold">{out.horizonEp}</span>
@@ -183,6 +184,7 @@ function UpgradeTable({
             <td className="font-medium">
               {c.player.web_name}
               <StatusBadge player={c.player} />
+              <FormBadge form={c.form} />
             </td>
             <td className="text-ink-2">{shortName(c.player.team)}</td>
             <td className="num">{money(c.player.now_cost)}</td>

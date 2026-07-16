@@ -57,6 +57,28 @@ export function StatusBadge({ player }: { player: Player }) {
   );
 }
 
+/**
+ * Recent-form indicator next to a player's name. `form` is the projection's
+ * form multiplier (1 = on season baseline). Only shown when it deviates enough
+ * to matter, so the common on-baseline case stays uncluttered.
+ */
+export function FormBadge({ form }: { form: number }) {
+  if (form >= 0.9 && form <= 1.1) return null;
+  const hot = form > 1;
+  const pct = Math.round((form - 1) * 100);
+  return (
+    <span
+      title={`Recent form is ${hot ? "above" : "below"} this player's season baseline — projection adjusted ${pct > 0 ? "+" : ""}${pct}%`}
+      className={`ml-1.5 rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums border ${
+        hot ? "text-good border-good/40" : "text-bad border-bad/40"
+      }`}
+    >
+      {hot ? "▲" : "▼"} {pct > 0 ? "+" : ""}
+      {pct}%
+    </span>
+  );
+}
+
 /** Horizontal score bar, 0–100, single-series accent hue with a direct label. */
 export function ScoreBar({ score, max = 100 }: { score: number; max?: number }) {
   const pct = Math.max(0, Math.min(100, (score / max) * 100));

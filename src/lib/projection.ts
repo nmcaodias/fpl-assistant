@@ -106,6 +106,46 @@ const DC_THRESHOLD: Record<Position, number> = { 1: Infinity, 2: 10, 3: 12, 4: 1
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
+const parseNum = (s: string) => {
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : 0;
+};
+
+// --- Recency blending ---
+// The season-rate model is stable but slow to react; these fold in the
+// recency signals the FPL payload already carries (form, ep_next).
+
+/** How far to move toward recent form — 0.5 regresses a ~4-game sample halfway. */
+const FORM_WEIGHT = 0.5;
+const FORM_FACTOR_MIN = 0.6;
+const FORM_FACTOR_MAX = 1.6;
+/** Weight given to FPL's own ep_next when anchoring the nearest gameweek. */
+const EP_NEXT_WEIGHT = 0.35;
+
+/**
+ * Multiplier that nudges a season-rate projection toward recent form. `form`
+ * (recent points per game) is compared to the player's own season PPG, so both
+ * sides sit on the actual-points scale and the model-vs-actual scale mismatch
+ * cancels. Regressed by FORM_WEIGHT because form is a small, noisy sample, and
+ * bounded so one hot or cold streak can't dominate a horizon view.
+ *
+ * Only applied to fully available players: injuries, doubts, and suspensions
+ * are already modelled by availabilityAt, and a flagged player's form is
+ * depressed for the same reason, so letting form bite too would double-count.
+ * A reliable season baseline is required (>=1 PPG over >=90 minutes); without
+ * one the factor is neutral.
+ */
+export function formFactor(
+  form: number,
+  ppg: number,
+  minutes: number,
+  status: string,
+): number {
+  if (status !== "a" || ppg < 1 || minutes < 90) return 1;
+  const ratio = form / ppg;
+  return clamp(1 + (ratio - 1) * FORM_WEIGHT, FORM_FACTOR_MIN, FORM_FACTOR_MAX);
+}
+
 /** Per-player rates precomputed once, independent of fixture. */
 interface Rates {
   m: number; // expected share of 90 minutes when fit
@@ -188,9 +228,13 @@ export interface PlayerProjection {
   player: Player;
   /** Expected minutes per match when fit */
   xMins: number;
-  /** xPts for a single neutral-difficulty match at full availability */
+  /** xPts for a single neutral-difficulty match at full availability (pure
+   * season rates, before any form adjustment — the transparent baseline) */
   epPerMatch: number;
-  /** xPts per gameweek from nextGw, availability- and fixture-adjusted */
+  /** Recent-form multiplier applied to perGw/horizonEp; 1 = on season baseline,
+   * >1 in form, <1 out of form (see formFactor) */
+  form: number;
+  /** xPts per gameweek from nextGw, availability-, fixture-, and form-adjusted */
   perGw: GwProjection[];
   /** Sum of perGw over the requested horizon */
   horizonEp: number;
@@ -210,6 +254,14 @@ export function projectPlayers(
   for (const p of players) {
     const r = buildRates(p, ctx);
     const epPerMatch = epForMatch(p, r, 3);
+    // Recent form only means something while the season is running. Between
+    // seasons FPL zeroes every player's `form` (no matches in the window), so
+    // applying it would wrongly cut everyone to the floor — leave it neutral.
+    const ff =
+      ctx.nextGw !== null
+        ? formFactor(parseNum(p.form), parseNum(p.points_per_game), p.minutes, p.status)
+        : 1;
+    const epNext = parseNum(p.ep_next);
 
     const perGw: GwProjection[] = [];
     if (ctx.nextGw !== null) {
@@ -223,7 +275,13 @@ export function projectPlayers(
       for (let gw = ctx.nextGw; gw <= end; gw++) {
         const fx = byGw.get(gw) ?? [];
         const avail = availabilityAt(p, r.baseAvailability, gw - ctx.nextGw);
-        const ep = fx.reduce((s, f) => s + epForMatch(p, r, f.difficulty) * avail, 0);
+        let ep = fx.reduce((s, f) => s + epForMatch(p, r, f.difficulty) * avail, 0) * ff;
+        // Anchor the nearest single-fixture gameweek to FPL's own ep_next: it
+        // reflects late-breaking info our season rates can't, and steadies the
+        // cold-start case (early season, new signings) where rates are thin.
+        if (gw === ctx.nextGw && fx.length === 1 && epNext > 0) {
+          ep = (1 - EP_NEXT_WEIGHT) * ep + EP_NEXT_WEIGHT * epNext;
+        }
         perGw.push({ gw, ep: round1(ep), fixtures: fx });
       }
     }
@@ -231,12 +289,13 @@ export function projectPlayers(
     const horizonEp =
       ctx.nextGw !== null
         ? perGw.reduce((s, g) => s + g.ep, 0)
-        : epPerMatch * r.baseAvailability * horizon;
+        : epPerMatch * r.baseAvailability * ff * horizon;
 
     out.set(p.id, {
       player: p,
       xMins: Math.round(r.m * 90),
       epPerMatch: round1(epPerMatch),
+      form: Math.round(ff * 100) / 100,
       perGw,
       horizonEp: round1(horizonEp),
     });

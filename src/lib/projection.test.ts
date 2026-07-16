@@ -4,6 +4,7 @@ import {
   buildProjectionContext,
   findUpgrades,
   fixtureEase,
+  formFactor,
   HIT_COST,
   projectPlayers,
 } from "./projection";
@@ -153,6 +154,34 @@ describe("availabilityAt", () => {
   });
 });
 
+describe("formFactor", () => {
+  it("is neutral (1) when recent form matches the season baseline", () => {
+    expect(formFactor(5, 5, 900, "a")).toBe(1);
+  });
+
+  it("boosts a player whose recent form beats their season baseline, halfway", () => {
+    // form 8 vs ppg 4 -> ratio 2, factor 1 + (2-1)*0.5 = 1.5
+    expect(formFactor(8, 4, 900, "a")).toBeCloseTo(1.5, 5);
+  });
+
+  it("cuts a player whose recent form trails their season baseline, halfway", () => {
+    // form 2 vs ppg 4 -> ratio 0.5, factor 1 + (0.5-1)*0.5 = 0.75
+    expect(formFactor(2, 4, 900, "a")).toBeCloseTo(0.75, 5);
+  });
+
+  it("clamps to the [0.6, 1.6] band for extreme streaks", () => {
+    expect(formFactor(0, 5, 900, "a")).toBe(0.6); // ice cold, would be 0.5
+    expect(formFactor(20, 4, 900, "a")).toBe(1.6); // red hot, would be 3.0
+  });
+
+  it("stays neutral without a reliable season baseline or when flagged", () => {
+    expect(formFactor(8, 0.5, 900, "a")).toBe(1); // ppg under 1
+    expect(formFactor(8, 4, 45, "a")).toBe(1); // under 90 minutes
+    expect(formFactor(8, 4, 900, "d")).toBe(1); // doubtful — availabilityAt owns this
+    expect(formFactor(0, 4, 900, "i")).toBe(1); // injured — not double-counted
+  });
+});
+
 describe("projectPlayers", () => {
   it("computes epPerMatch from underlying rates for a fully available, fully-minuted player", () => {
     const events = [makeEvent({ id: 1, is_next: true })];
@@ -230,6 +259,90 @@ describe("projectPlayers", () => {
     expect(gws).toEqual([37, 38]);
   });
 
+  it("scales perGw and horizonEp by recent form, and reports the factor", () => {
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const fixtures = [makeFixture({ event: 1, team_h: 10, team_a: 20 })];
+    const base = {
+      team: 10,
+      status: "a",
+      minutes: 900,
+      expected_goals_per_90: 0.5,
+      points_per_game: "4.0",
+    } as const;
+    const cold = makePlayer({ ...base, id: 1, form: "2.0" }); // ratio 0.5 -> 0.75
+    const hot = makePlayer({ ...base, id: 2, form: "8.0" }); // ratio 2 -> 1.5
+    const ctx = buildProjectionContext(fixtures, events, []);
+    ctx.gamesPlayed[10] = 10;
+
+    const proj = projectPlayers([cold, hot], ctx, 1);
+    const c = proj.get(1)!;
+    const h = proj.get(2)!;
+    expect(c.form).toBeCloseTo(0.75, 5);
+    expect(h.form).toBeCloseTo(1.5, 5);
+    // epPerMatch is the pure season baseline, identical for both.
+    expect(c.epPerMatch).toBeCloseTo(h.epPerMatch, 5);
+    // The in-form player projects higher than the out-of-form one.
+    expect(h.horizonEp).toBeGreaterThan(c.horizonEp);
+  });
+
+  it("does not apply a form cut between seasons, when FPL zeroes everyone's form", () => {
+    const events = [makeEvent({ id: 1, finished: true })]; // season over, nextGw null
+    // A regular starter whose form is 0 only because there's no football on.
+    const player = makePlayer({
+      status: "a",
+      minutes: 900,
+      points_per_game: "5.0",
+      form: "0.0",
+    });
+    const ctx = buildProjectionContext([], events, []);
+    ctx.gamesPlayed[player.team] = 10;
+
+    const p = projectPlayers([player], ctx, 5).get(player.id)!;
+    expect(p.form).toBe(1); // neutral, not the 0.6 floor
+    expect(p.horizonEp).toBeCloseTo(p.epPerMatch * 5, 0);
+  });
+
+  it("anchors only the nearest single-fixture gameweek toward FPL's ep_next", () => {
+    const events = [makeEvent({ id: 1, is_next: true }), makeEvent({ id: 2 })];
+    const fixtures = [
+      makeFixture({ id: 1, event: 1, team_h: 10, team_a: 20 }),
+      makeFixture({ id: 2, event: 2, team_h: 10, team_a: 20 }),
+    ];
+    const base = { team: 10, status: "a", minutes: 900 } as const;
+    // Identical players apart from ep_next; a very high ep_next makes the pull
+    // unmistakable and independent of the model's absolute level.
+    const anchored = makePlayer({ ...base, id: 1, ep_next: "50.0" });
+    const plain = makePlayer({ ...base, id: 2, ep_next: "0.0" });
+    const ctx = buildProjectionContext(fixtures, events, []);
+    ctx.gamesPlayed[10] = 10;
+
+    const a = projectPlayers([anchored], ctx, 2).get(1)!;
+    const b = projectPlayers([plain], ctx, 2).get(2)!;
+    // GW1 (nearest, single fixture) is pulled up toward ep_next.
+    expect(a.perGw[0].ep).toBeGreaterThan(b.perGw[0].ep + 5);
+    // GW2 is not the nearest gameweek, so ep_next leaves it untouched.
+    expect(a.perGw[1].ep).toBeCloseTo(b.perGw[1].ep, 5);
+  });
+
+  it("does not anchor a double gameweek to ep_next (it covers one match)", () => {
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const fixtures = [
+      makeFixture({ id: 1, event: 1, team_h: 10, team_a: 20 }),
+      makeFixture({ id: 2, event: 1, team_h: 30, team_a: 10 }),
+    ];
+    const base = { team: 10, status: "a", minutes: 900 } as const;
+    const anchored = makePlayer({ ...base, id: 1, ep_next: "50.0" });
+    const plain = makePlayer({ ...base, id: 2, ep_next: "0.0" });
+    const ctx = buildProjectionContext(fixtures, events, []);
+    ctx.gamesPlayed[10] = 10;
+
+    const a = projectPlayers([anchored], ctx, 1).get(1)!;
+    const b = projectPlayers([plain], ctx, 1).get(2)!;
+    expect(a.perGw[0].fixtures).toHaveLength(2);
+    // The high ep_next must not leak into a double gameweek.
+    expect(a.perGw[0].ep).toBeCloseTo(b.perGw[0].ep, 5);
+  });
+
   it("projects lower ep for a harder fixture than an easier one", () => {
     const events = [makeEvent({ id: 1, is_next: true })];
     const player = makePlayer({ team: 10, status: "a", minutes: 90, expected_goals_per_90: 0.6 });
@@ -258,6 +371,7 @@ describe("findUpgrades", () => {
       player,
       xMins,
       epPerMatch: horizonEp,
+      form: 1,
       perGw: [],
       horizonEp,
     };

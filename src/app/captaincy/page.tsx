@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import TeamIdGate from "@/components/TeamIdGate";
-import { ErrorNote, Loading, ScoreBar, SeasonBanner, StatusBadge } from "@/components/ui";
+import { ErrorNote, FormBadge, Loading, ScoreBar, SeasonBanner, StatusBadge } from "@/components/ui";
 import {
   buildProjectionContext,
   projectPlayers,
@@ -174,6 +174,7 @@ function CaptainRow({
             </span>
           )}
           <StatusBadge player={p} />
+          <FormBadge form={proj.form} />
         </div>
         <div className="text-xs text-ink-2">{detail}</div>
       </div>

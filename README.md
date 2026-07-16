@@ -22,8 +22,12 @@ Decisions come from an expected-points (xPts) engine (`src/lib/projection.ts`)
 that projects each player per future gameweek from underlying rates — xG/xA
 per 90, projected minutes, Poisson clean-sheet odds from team goals conceded,
 saves, defensive-contribution points (2025/26 rule), and bonus rate — adjusted
-per fixture by difficulty. Double gameweeks sum both fixtures; blanks score
-zero; flagged players are assumed back within ~4 gameweeks. Chip advice
+per fixture by difficulty. The season-rate projection is then nudged toward
+recent form (a player's `form` relative to their own season average, bounded
+and regressed since it's a small sample) and, for the nearest gameweek,
+anchored partway to FPL's own `ep_next`. Double gameweeks sum both fixtures;
+blanks score zero; flagged players are assumed back within ~4 gameweeks. Chip
+advice
 (`src/lib/chips.ts`) sits on top: Triple Captain targets the best
 single-player gameweek, Bench Boost the best full-15 gameweek, Free Hit the
 worst blank, and the Wildcard is judged by how much xPts a rebuild adds.

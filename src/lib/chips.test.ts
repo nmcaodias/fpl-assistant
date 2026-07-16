@@ -26,6 +26,7 @@ function makeProjection(
     player: makePlayer({ id, web_name: `P${id}` }),
     xMins: 90,
     epPerMatch: 5,
+    form: 1,
     perGw,
     horizonEp: perGw.reduce((s, g) => s + g.ep, 0),
   };
