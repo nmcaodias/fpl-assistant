@@ -12,26 +12,32 @@ interface JsonState<T> {
   loading: boolean;
 }
 
-export function useJson<T>(url: string | null): JsonState<T> {
+function initialState<T>(url: string | null): JsonState<T> {
   const cached = url ? (jsonCache.get(url) as T | undefined) : undefined;
-  const [state, setState] = useState<JsonState<T>>({
+  return {
     data: cached ?? null,
     error: null,
     loading: url !== null && cached === undefined,
-  });
+  };
+}
+
+export function useJson<T>(url: string | null): JsonState<T> {
+  const [state, setState] = useState<JsonState<T>>(() => initialState<T>(url));
+  const [trackedUrl, setTrackedUrl] = useState(url);
+
+  // When the url changes, reset state during render rather than in an effect —
+  // React applies this before painting and skips the extra render pass.
+  if (url !== trackedUrl) {
+    setTrackedUrl(url);
+    setState(initialState<T>(url));
+  }
 
   useEffect(() => {
-    if (!url) {
-      setState({ data: null, error: null, loading: false });
-      return;
-    }
-    const hit = jsonCache.get(url) as T | undefined;
-    if (hit !== undefined) {
-      setState({ data: hit, error: null, loading: false });
-      return;
-    }
+    // initialState already populated data on a cache hit and set loading only
+    // on a miss, so only a genuine miss needs a fetch here.
+    if (!url || jsonCache.has(url)) return;
+
     let cancelled = false;
-    setState({ data: null, error: null, loading: true });
     fetch(url)
       .then(async (res) => {
         if (!res.ok) {
@@ -63,12 +69,20 @@ export const useEntry = (teamId: number | null) =>
 const TEAM_ID_KEY = "fpl-team-id";
 
 export function useTeamId(): [number | null, (id: number | null) => void, boolean] {
-  const [teamId, setTeamIdState] = useState<number | null>(null);
+  const [teamId, setTeamIdState] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    const stored = localStorage.getItem(TEAM_ID_KEY);
+    return stored ? parseInt(stored, 10) || null : null;
+  });
+  // `ready` stays false through the first (server-matching) render and flips
+  // after mount, so consumers can gate on it and avoid a hydration mismatch.
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    const stored = localStorage.getItem(TEAM_ID_KEY);
-    if (stored) setTeamIdState(parseInt(stored, 10) || null);
+    // Detecting that we've mounted on the client is the one thing that
+    // genuinely requires an effect setState — there's no render-phase signal
+    // for it — so the cascading-render rule doesn't apply.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setReady(true);
   }, []);
 

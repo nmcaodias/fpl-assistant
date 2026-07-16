@@ -34,7 +34,7 @@ export function SeasonBanner({ events }: { events: Event[] }) {
     <div className="card mb-4 px-4 py-3 text-sm text-ink-2">
       <span className="font-medium text-ink">Season complete.</span> The FPL
       game is between seasons — rankings below use full-season stats, and
-      fixture-based advice will light up when the new season's game goes live
+      fixture-based advice will light up when the new season&apos;s game goes live
       (usually early July).
     </div>
   );

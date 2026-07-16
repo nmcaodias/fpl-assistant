@@ -23,7 +23,7 @@ export default function TeamIdGate({
     <div className="card mx-auto mt-8 max-w-md px-6 py-6">
       <h2 className="text-lg font-semibold">Connect your FPL team</h2>
       <p className="mt-2 text-sm text-ink-2">
-        Enter your team ID — it's the number in the URL when you open the
+        Enter your team ID — it&apos;s the number in the URL when you open the
         Points page on fantasy.premierleague.com:{" "}
         <span className="font-mono text-xs">…/entry/<b>1234567</b>/event/…</span>
       </p>

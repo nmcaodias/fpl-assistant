@@ -102,7 +102,7 @@ function Advice({
       <SeasonBanner events={bootstrap.events} />
       <h1 className="text-xl font-semibold tracking-tight">Chip strategy</h1>
       <p className="mt-1 mb-4 text-sm text-ink-2">
-        When to play each chip, based on your squad's projected points for
+        When to play each chip, based on your squad&apos;s projected points for
         every remaining gameweek — doubles and blanks included. Timing advice
         firms up as fixtures (and cup reschedules) are confirmed, so re-check
         after big fixture news.
@@ -110,7 +110,7 @@ function Advice({
 
       {advice.ctx.nextGw === null && (
         <div className="card mb-4 px-4 py-3 text-sm text-ink-2">
-          Chip timing needs the new season's fixtures — recommendations will
+          Chip timing needs the new season&apos;s fixtures — recommendations will
           appear here as soon as the FPL game relaunches.
         </div>
       )}

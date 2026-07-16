@@ -43,7 +43,7 @@ function FdrGrid({ bootstrap, fixtures }: { bootstrap: Bootstrap; fixtures: Fixt
         <div className="card mt-4 px-6 py-8 text-center text-sm text-ink-2">
           <p className="font-medium text-ink">The season is over.</p>
           <p className="mt-2">
-            The fixture planner will fill in as soon as the new season's
+            The fixture planner will fill in as soon as the new season&apos;s
             fixtures land in the FPL API — usually when the game relaunches in
             early July.
           </p>
@@ -61,7 +61,7 @@ function FdrGrid({ bootstrap, fixtures }: { bootstrap: Bootstrap; fixtures: Fixt
           <h1 className="text-xl font-semibold tracking-tight">Fixture difficulty</h1>
           <p className="mt-1 text-sm text-ink-2">
             Next {grid.gws.length} gameweeks, easiest run first. Cell shows the
-            opponent; colour is FPL's difficulty rating for that match.
+            opponent; colour is FPL&apos;s difficulty rating for that match.
           </p>
         </div>
         <Legend />
