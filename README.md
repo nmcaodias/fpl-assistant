@@ -42,6 +42,21 @@ The two never combine — both describe recency, so applying them together would
 double-count. The proxy is also off between seasons, when FPL zeroes every
 player's `form`.
 
+Finally the raw projection is **calibrated** onto the scale points are really
+scored on. Backtesting showed it was over-spread — too confident at both ends:
+the top decile of 5-gameweek projections predicted 25.9 points and returned
+19.2, the bottom predicted 2.2 and returned 8.0. A straight line can't reorder
+anything, so rankings are untouched; what changes is every decision that reads
+an absolute gap. Coefficients are fitted walk-forward by
+`scripts/backtest/calibrate.ts` and re-derived each season.
+
+That correction is also why a −4 hit needs a much bigger edge than the 4 points
+it costs (`WORTH_A_HIT_GAIN`). The suggestion is the best of hundreds of
+candidate swaps, and the maximum of many noisy estimates is flattered by its own
+luck — the optimizer's curse, which calibration can't fix because it only exists
+in the argmax. Simulated against last season, hits taken on a 4-point edge lost
+~9 points per 5 gameweeks versus never hitting at all.
+
 Chip advice
 (`src/lib/chips.ts`) sits on top: Triple Captain targets the best
 single-player gameweek, Bench Boost the best full-15 gameweek, Free Hit the

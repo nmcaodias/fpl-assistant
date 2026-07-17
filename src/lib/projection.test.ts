@@ -9,6 +9,7 @@ import {
   projectPlayers,
   summariseHistories,
   summariseRecent,
+  WORTH_A_HIT_GAIN,
 } from "./projection";
 import {
   makeEvent,
@@ -279,6 +280,75 @@ describe("projectPlayers", () => {
     expect(p.perGw[0].fixtures).toHaveLength(2);
     // A double gameweek should be worth roughly double a single one.
     expect(p.perGw[0].ep).toBeGreaterThan(p.epPerMatch * 1.5);
+  });
+
+  it("calibrates per-gameweek ep onto the actual-points scale", () => {
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const fixtures = [makeFixture({ event: 1, team_h: 10, team_a: 20 })];
+    const player = makePlayer({ team: 10, status: "a", minutes: 900 });
+    const ctx = buildProjectionContext(fixtures, events, []);
+    ctx.gamesPlayed[10] = 10;
+
+    const p = projectPlayers([player], ctx, 1).get(player.id)!;
+    // epPerMatch is the raw baseline; a neutral single fixture at full
+    // availability projects exactly that, so the week is 1.115 + 0.523×raw.
+    expect(p.perGw[0].ep).toBeCloseTo(1.115 + 0.523 * p.epPerMatch, 1);
+  });
+
+  it("pulls optimistic projections down and pessimistic ones up", () => {
+    // Regression to the mean cuts both ways. The correction's fixed point is
+    // 1.115 / (1 − 0.523) ≈ 2.34 xPts: above it a projection is trimmed, below
+    // it a player is credited with the returns fringe players actually manage.
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const fixtures = [makeFixture({ event: 1, team_h: 10, team_a: 20 })];
+    const base = { team: 10, status: "a" } as const;
+    const star = makePlayer({ ...base, id: 1, minutes: 900, expected_goals_per_90: 0.8 });
+    const fringe = makePlayer({ ...base, id: 2, minutes: 200 });
+    const ctx = buildProjectionContext(fixtures, events, []);
+    ctx.gamesPlayed[10] = 10;
+
+    const proj = projectPlayers([star, fringe], ctx, 1);
+    const a = proj.get(1)!;
+    const b = proj.get(2)!;
+    expect(a.epPerMatch).toBeGreaterThan(2.34);
+    expect(a.perGw[0].ep).toBeLessThan(a.epPerMatch);
+    expect(b.epPerMatch).toBeLessThan(2.34);
+    expect(b.perGw[0].ep).toBeGreaterThan(b.epPerMatch);
+  });
+
+  it("shrinks the gap between two players without reordering them", () => {
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const fixtures = [makeFixture({ event: 1, team_h: 10, team_a: 20 })];
+    const base = { team: 10, status: "a", minutes: 900 } as const;
+    const star = makePlayer({ ...base, id: 1, expected_goals_per_90: 0.8 });
+    const dud = makePlayer({ ...base, id: 2, expected_goals_per_90: 0.1 });
+    const ctx = buildProjectionContext(fixtures, events, []);
+    ctx.gamesPlayed[10] = 10;
+
+    const proj = projectPlayers([star, dud], ctx, 1);
+    const a = proj.get(1)!;
+    const b = proj.get(2)!;
+    // Order preserved — a straight line can't reorder anything.
+    expect(a.horizonEp).toBeGreaterThan(b.horizonEp);
+    // …but the gap is scaled by the slope, which is what the hit maths reads.
+    const rawGap = a.epPerMatch - b.epPerMatch;
+    expect(a.horizonEp - b.horizonEp).toBeCloseTo(0.523 * rawGap, 1);
+  });
+
+  it("does not credit calibration's baseline to a player who never features", () => {
+    // The intercept stands for what a fringe player scrapes together when he
+    // does play. Someone with no minutes at all must stay at zero, or the
+    // deadwood you should be selling looks worth keeping.
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const fixtures = [makeFixture({ event: 1, team_h: 10, team_a: 20 })];
+    const unavailable = makePlayer({ team: 10, id: 1, status: "u", minutes: 0 });
+    const neverPlays = makePlayer({ team: 10, id: 2, status: "a", minutes: 0 });
+    const ctx = buildProjectionContext(fixtures, events, []);
+    ctx.gamesPlayed[10] = 10;
+
+    const proj = projectPlayers([unavailable, neverPlays], ctx, 5);
+    expect(proj.get(1)!.horizonEp).toBe(0);
+    expect(proj.get(2)!.horizonEp).toBe(0);
   });
 
   it("gives zero ep for a blank gameweek (no fixtures)", () => {
@@ -603,16 +673,29 @@ describe("findUpgrades", () => {
     expect(upgrades.map((u) => u.candidate.player.id)).toEqual([3, 4]);
   });
 
-  it("flags a hit as worthwhile only when the gain exceeds HIT_COST", () => {
+  it("flags a hit as worthwhile only when the gain exceeds WORTH_A_HIT_GAIN", () => {
     const outgoing = projectionFor(makePlayer({ id: 1, element_type: 3, now_cost: 80 }), 10);
     const market = new Map([
-      [2, projectionFor(makePlayer({ id: 2, element_type: 3, now_cost: 80 }), 10 + HIT_COST)],
-      [3, projectionFor(makePlayer({ id: 3, element_type: 3, now_cost: 80 }), 10 + HIT_COST + 0.1)],
+      [2, projectionFor(makePlayer({ id: 2, element_type: 3, now_cost: 80 }), 10 + WORTH_A_HIT_GAIN)],
+      [
+        3,
+        projectionFor(makePlayer({ id: 3, element_type: 3, now_cost: 80 }), 10 + WORTH_A_HIT_GAIN + 0.1),
+      ],
     ]);
     const upgrades = findUpgrades(outgoing, market, new Set([1]), {}, 100);
     const notWorth = upgrades.find((u) => u.candidate.player.id === 2)!;
     const worth = upgrades.find((u) => u.candidate.player.id === 3)!;
-    expect(notWorth.worthAHit).toBe(false); // exactly HIT_COST is not "more than"
+    expect(notWorth.worthAHit).toBe(false); // exactly the threshold is not "more than"
     expect(worth.worthAHit).toBe(true);
+  });
+
+  it("does not call a swap hit-worthy merely for clearing the 4 points a hit costs", () => {
+    // The bar is deliberately well above HIT_COST — see WORTH_A_HIT_GAIN.
+    const outgoing = projectionFor(makePlayer({ id: 1, element_type: 3, now_cost: 80 }), 10);
+    const market = new Map([
+      [2, projectionFor(makePlayer({ id: 2, element_type: 3, now_cost: 80 }), 10 + HIT_COST + 1)],
+    ]);
+    const upgrades = findUpgrades(outgoing, market, new Set([1]), {}, 100);
+    expect(upgrades[0].worthAHit).toBe(false);
   });
 });

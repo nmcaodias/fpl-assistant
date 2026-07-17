@@ -122,6 +122,54 @@ const FORM_FACTOR_MAX = 1.6;
 /** Weight given to FPL's own ep_next when anchoring the nearest gameweek. */
 const EP_NEXT_WEIGHT = 0.35;
 
+// --- Calibration ---
+//
+// The raw model is over-spread: it is too confident at both ends. Over 2025/26
+// the top decile of 5-gameweek projections predicted 25.9 points and returned
+// 19.2, while the bottom predicted 2.2 and returned 8.0 — textbook regression
+// to the mean. A straight line can't reorder anything, so transfer *rankings*
+// are untouched; what changes is every decision that reads an absolute gap. A
+// raw +8 xPts edge is really worth +4.2, which is the difference between "worth
+// a −4 hit" and a wasted hit.
+//
+// Fitted by scripts/backtest/calibrate.ts, walk-forward, on 2025/26 — re-derive
+// each season. The coefficients come from the 5-gameweek horizon fit spread
+// across its weeks, so that summing calibrated weeks reproduces that fit
+// exactly. The horizon is the level transfer decisions read, and its slope is
+// far steadier over a season (0.517–0.520) than the per-week one (0.632–0.681),
+// which is what makes shipping a constant defensible at all.
+const CALIBRATION_INTERCEPT = 1.115;
+const CALIBRATION_SLOPE = 0.523;
+
+/**
+ * Map a raw gameweek projection onto the scale points are actually scored on.
+ * A blank stays exactly 0: no fixture, no baseline to earn.
+ *
+ * `baselineWeight` gates the intercept, which was fitted only on players with
+ * football behind them and doesn't describe anyone else. It stands for the
+ * returns a fringe player scrapes together when he does turn out — low-minute
+ * players in the fitted pool really did score, which is why the intercept is
+ * flat across them rather than scaled by expected minutes. But a player with no
+ * minutes at all is outside that pool entirely: hand him the baseline and the
+ * deadwood you should be selling starts to look worth keeping.
+ */
+function calibrate(ep: number, hasFixture: boolean, baselineWeight: number): number {
+  if (!hasFixture) return 0;
+  return Math.max(
+    0,
+    CALIBRATION_INTERCEPT * clamp(baselineWeight, 0, 1) + CALIBRATION_SLOPE * ep,
+  );
+}
+
+/**
+ * How much of calibration's baseline a player has earned the right to.
+ * Zero for anyone yet to kick a ball — the fit never saw such a player — and
+ * tapered by availability, since a ruled-out player can't collect it either.
+ */
+function baselineWeight(p: Player, avail: number): number {
+  return p.minutes > 0 ? avail : 0;
+}
+
 /**
  * Multiplier that nudges a season-rate projection toward recent form. `form`
  * (recent points per game) is compared to the player's own season PPG, so both
@@ -316,8 +364,11 @@ export interface PlayerProjection {
   player: Player;
   /** Expected minutes per match when fit */
   xMins: number;
-  /** xPts for a single neutral-difficulty match at full availability (pure
-   * season rates, before any form adjustment — the transparent baseline) */
+  /** xPts for a single neutral-difficulty match at full availability. The raw
+   * model's own number: pure season rates, before form adjustment and before
+   * calibration — the transparent baseline. Everything else here (perGw,
+   * horizonEp) is calibrated onto the actual-points scale, so this reads high
+   * by comparison; prefer those for anything user-facing. */
   epPerMatch: number;
   /** Recent-form multiplier applied to perGw/horizonEp; 1 = on season baseline,
    * >1 in form, <1 out of form (see formFactor). Always 1 when usedRecent, as
@@ -375,6 +426,9 @@ export function projectPlayers(
         const fx = byGw.get(gw) ?? [];
         const avail = availabilityAt(p, r.baseAvailability, gw - ctx.nextGw);
         let ep = fx.reduce((s, f) => s + epForMatch(p, r, f.difficulty) * avail, 0) * ff;
+        // Calibrate before blending: this puts our own number on the
+        // actual-points scale, which is the scale ep_next already reports on.
+        ep = calibrate(ep, fx.length > 0, baselineWeight(p, avail));
         // Anchor the nearest single-fixture gameweek to FPL's own ep_next: it
         // reflects late-breaking info our season rates can't, and steadies the
         // cold-start case (early season, new signings) where rates are thin.
@@ -385,10 +439,17 @@ export function projectPlayers(
       }
     }
 
+    // Between seasons there are no fixtures to walk, so each of the `horizon`
+    // weeks is treated as one notional match — calibrated like any other, to
+    // keep horizonEp on a single scale year-round.
     const horizonEp =
       ctx.nextGw !== null
         ? perGw.reduce((s, g) => s + g.ep, 0)
-        : epPerMatch * r.baseAvailability * ff * horizon;
+        : calibrate(
+            epPerMatch * r.baseAvailability * ff,
+            true,
+            baselineWeight(p, r.baseAvailability),
+          ) * horizon;
 
     out.set(p.id, {
       player: p,
@@ -407,8 +468,29 @@ function round1(n: number) {
   return Math.round(n * 10) / 10;
 }
 
-/** A transfer is worth a -4 hit when it gains more than 4 xPts over the horizon. */
+/** What a transfer beyond your free ones actually costs. */
 export const HIT_COST = 4;
+
+/**
+ * Projected gain a swap must clear before a −4 hit is worth recommending.
+ * Deliberately far above the 4 points a hit costs.
+ *
+ * Breaking even on paper isn't enough, because the suggestion is the *best* of
+ * hundreds of candidate swaps, and the maximum of many noisy estimates is
+ * selected partly for its own optimism — the optimizer's curse. Calibration
+ * fixes the average projection but can't fix a bias that only exists in the
+ * argmax, so a threshold set at the nominal cost still fires on swaps whose
+ * real edge is nowhere near it.
+ *
+ * Measured, not guessed (scripts/backtest/strategy-compare.ts, 2025/26): acting
+ * on a threshold of 4 cost ~9 points per 5 gameweeks against simply never
+ * taking a hit. The loss only vanishes around 10–12, by which point the advice
+ * fires on a couple of percent of gameweeks and gains ~0. Hits, in short,
+ * almost never pay — this threshold is set where it stops doing harm rather
+ * than where it starts doing good. The exact figure is tuned on one season; the
+ * direction (far stricter than the cost) is the robust part.
+ */
+export const WORTH_A_HIT_GAIN = 10;
 
 export interface Upgrade {
   candidate: PlayerProjection;
@@ -449,6 +531,6 @@ export function findUpgrades(
     .slice(0, limit)
     .map((c) => {
       const deltaEp = round1(c.horizonEp - outgoing.horizonEp);
-      return { candidate: c, deltaEp, worthAHit: deltaEp > HIT_COST };
+      return { candidate: c, deltaEp, worthAHit: deltaEp > WORTH_A_HIT_GAIN };
     });
 }

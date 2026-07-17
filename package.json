@@ -10,7 +10,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "backtest:fetch": "tsx scripts/backtest/fetch.ts",
-    "backtest": "tsx scripts/backtest/run.ts"
+    "backtest": "tsx scripts/backtest/run.ts",
+    "backtest:calibrate": "tsx scripts/backtest/calibrate.ts",
+    "backtest:strategies": "tsx scripts/backtest/strategy-compare.ts"
   },
   "dependencies": {
     "next": "16.2.10",

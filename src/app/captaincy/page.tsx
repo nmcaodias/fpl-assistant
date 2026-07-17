@@ -68,9 +68,11 @@ function Ranking({
     const recent = histories ? summariseHistories(histories) : undefined;
     const projections = projectPlayers(squad, ctx, 1, recent);
     const ranked = [...projections.values()].sort((a, b) => {
-      // Next-GW xPts when fixtures exist, per-match xPts between seasons.
-      const av = ctx.nextGw !== null ? (a.perGw[0]?.ep ?? 0) : a.epPerMatch;
-      const bv = ctx.nextGw !== null ? (b.perGw[0]?.ep ?? 0) : b.epPerMatch;
+      // Next-GW xPts when fixtures exist. Between seasons horizonEp stands in:
+      // with a horizon of 1 it is the calibrated per-match number, where
+      // epPerMatch would be the raw pre-calibration one.
+      const av = ctx.nextGw !== null ? (a.perGw[0]?.ep ?? 0) : a.horizonEp;
+      const bv = ctx.nextGw !== null ? (b.perGw[0]?.ep ?? 0) : b.horizonEp;
       return bv - av;
     });
     return { ranked, ctx };
@@ -86,7 +88,7 @@ function Ranking({
   const teamsById = new Map(bootstrap.teams.map((t) => [t.id, t]));
   const currentCaptain = entry.picks?.find((p) => p.is_captain)?.element;
   const epOf = (s: PlayerProjection) =>
-    result.ctx.nextGw !== null ? (s.perGw[0]?.ep ?? 0) : s.epPerMatch;
+    result.ctx.nextGw !== null ? (s.perGw[0]?.ep ?? 0) : s.horizonEp;
   const maxEp = epOf(result.ranked[0]) || 1;
 
   return (
@@ -162,7 +164,7 @@ function CaptainRow({
   const gwFixtures = proj.perGw[0]?.fixtures ?? [];
   const fixtureText =
     ctx.nextGw === null
-      ? `~${proj.epPerMatch} xPts per match`
+      ? `~${proj.horizonEp} xPts per match`
       : gwFixtures.length === 0
         ? "blank gameweek"
         : gwFixtures

@@ -10,6 +10,7 @@ import {
   HIT_COST,
   projectPlayers,
   summariseHistories,
+  WORTH_A_HIT_GAIN,
   type PlayerProjection,
   type RecentWindow,
   type Upgrade,
@@ -142,9 +143,11 @@ function Analysis({
       <p className="mt-1 mb-4 text-sm text-ink-2">
         Everything below is projected points (xPts) over the next {HORIZON}{" "}
         gameweeks — built from xG/xA per 90, projected minutes, clean-sheet
-        odds, and fixture difficulty. A move is worth a −{HIT_COST} hit only if
-        it gains more than {HIT_COST} xPts. Prices are market values, not your
-        personal selling prices.
+        odds, and fixture difficulty. A move only earns a −{HIT_COST} hit if it
+        gains more than {WORTH_A_HIT_GAIN} xPts: far more than the hit costs,
+        because the best-looking swap of hundreds is always flattered by luck.
+        Backtested on last season, hits taken on a smaller edge lost points.
+        Prices are market values, not your personal selling prices.
         {histories.loading &&
           " Sharpening your squad and its candidates with their last 5 matches…"}
       </p>

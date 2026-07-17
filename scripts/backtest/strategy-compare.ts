@@ -121,7 +121,21 @@ function scoreWeek(data: BacktestData, state: SquadState, market: Market, gw: nu
   return xi.reduce((s, p) => s + actualForGw(data, p.player.id, gw).points, 0);
 }
 
-type Strategy = "pat" | "greedy" | "planner" | "plannerNoHits";
+type Strategy =
+  | "pat"
+  | "greedy"
+  | "greedyHits"
+  | "greedyHitsRaw"
+  | "planner"
+  | "plannerNoHits";
+
+/**
+ * The engine's calibration slope (see projection.ts). Dividing a calibrated
+ * gap by it recovers the raw one the engine used to report, which is how the
+ * "raw" variant below replays the pre-calibration behaviour without needing a
+ * second build.
+ */
+const CALIBRATION_SLOPE = 0.523;
 
 interface RunResult {
   actual: number;
@@ -135,6 +149,8 @@ function runStrategy(
   startIds: number[],
   origin: number,
   marketByGw: Map<number, Market>,
+  /** Calibrated gain a second, paid-for transfer must clear. */
+  hitThreshold: number = HIT_COST,
 ): RunResult {
   const state: SquadState = { ids: new Set(startIds), bank: START_BANK, ft: START_FT };
   let actual = 0;
@@ -148,13 +164,29 @@ function runStrategy(
 
     let movesThisWeek = 0;
 
-    if (strategy === "greedy") {
+    if (strategy === "greedy" || strategy === "greedyHits" || strategy === "greedyHitsRaw") {
       const swap = bestSingleSwap(state, market);
       // Play the free transfer on any worthwhile gain; pay −4 only when the
       // gain beats the hit, exactly as the transfers page advises.
       if (swap && (state.ft > 0 ? swap.gain >= MIN_MOVE_GAIN : swap.gain > HIT_COST)) {
         applyMove(state, swap);
         movesThisWeek = 1;
+
+        // The "worth a −4" badge in action: having spent the free transfer,
+        // does a second swap pay for its own hit? greedyHits reads the
+        // calibrated gap; greedyHitsRaw reads the raw one the engine used to
+        // report, which is the same decision the old badge was making.
+        if (strategy !== "greedy" && state.ft - movesThisWeek < 1) {
+          const second = bestSingleSwap(state, market);
+          const judged =
+            strategy === "greedyHits"
+              ? (second?.gain ?? 0)
+              : (second?.gain ?? 0) / CALIBRATION_SLOPE;
+          if (second && judged > hitThreshold) {
+            applyMove(state, second);
+            movesThisWeek = 2;
+          }
+        }
       }
     } else if (strategy === "planner" || strategy === "plannerNoHits") {
       const plan = planTransfers([...state.ids], market, { ...ctxStub(gw) }, {
@@ -212,6 +244,8 @@ function main() {
       const res = {
         pat: runStrategy(data, "pat", startIds, origin, marketByGw),
         greedy: runStrategy(data, "greedy", startIds, origin, marketByGw),
+        greedyHits: runStrategy(data, "greedyHits", startIds, origin, marketByGw),
+        greedyHitsRaw: runStrategy(data, "greedyHitsRaw", startIds, origin, marketByGw),
         planner: runStrategy(data, "planner", startIds, origin, marketByGw),
         plannerNoHits: runStrategy(data, "plannerNoHits", startIds, origin, marketByGw),
       };
@@ -241,6 +275,9 @@ function main() {
   row("greedy", greedyMean, "greedy");
   row("planner", plannerMean, "planner");
   row("planner −hits", mean(of("plannerNoHits", (r) => r.actual)), "plannerNoHits");
+  console.log("--- following the \"worth a −4\" badge for a 2nd transfer ---");
+  row("badge (calib)", mean(of("greedyHits", (r) => r.actual)), "greedyHits");
+  row("badge (raw)", mean(of("greedyHitsRaw", (r) => r.actual)), "greedyHitsRaw");
 
   // Head-to-head: how often does the planner actually come out ahead?
   const wins = rows.filter((r) => r.res.planner.actual > r.res.greedy.actual).length;
@@ -266,6 +303,26 @@ function main() {
   console.log(
     "(windows overlap and share a season, so even this CI flatters the result)",
   );
+
+  // The badge fires on the *best* of hundreds of candidate swaps. Calibration
+  // corrects the average projection, but the maximum of many noisy estimates is
+  // selected for its own optimism — the optimizer's curse — so a threshold set
+  // at the nominal hit cost is still far too loose. Find where a hit really
+  // starts paying.
+  console.log("\n=== HIT THRESHOLD SWEEP — how big must a calibrated gain be to pay? ===");
+  console.log("(second transfer taken on a −4 once the calibrated gain clears the threshold)");
+  console.log("threshold   mean pts   vs greedy   transfers   hits");
+  for (const t of [4, 6, 8, 10, 12, 15, 20]) {
+    const runs = rows.map((r) =>
+      runStrategy(data, "greedyHits", buildSquad(marketByGw.get(r.origin)!, r.profile), r.origin, marketByGw, t),
+    );
+    const m = mean(runs.map((r) => r.actual));
+    console.log(
+      `${String(t).padStart(6)}    ${fmt(m)}   ${fmt(m - greedyMean)}   ` +
+        `${fmt(mean(runs.map((r) => r.transfers)))}  ${fmt(mean(runs.map((r) => r.hits)))}`,
+    );
+  }
+  console.log(`(greedy — never take a hit — is the bar to beat: ${greedyMean.toFixed(1)})`);
 
   console.log("\nBy squad profile (mean actual pts):");
   console.log("profile        pat   greedy  planner  plan−hits");
