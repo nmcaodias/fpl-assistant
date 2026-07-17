@@ -14,7 +14,8 @@
     "backtest:calibrate": "tsx scripts/backtest/calibrate.ts",
     "backtest:strategies": "tsx scripts/backtest/strategy-compare.ts",
     "backtest:squad": "tsx scripts/backtest/squad-demo.ts",
-    "backtest:ensemble": "tsx scripts/backtest/ensemble-test.ts"
+    "backtest:ensemble": "tsx scripts/backtest/ensemble-test.ts",
+    "backtest:season": "tsx scripts/backtest/season-sim.ts"
   },
   "dependencies": {
     "next": "16.2.10",

@@ -107,6 +107,34 @@ Top-vs-bottom decile lift is 2.5× and monotonic. Blending form or ICT into
 the engine adds ≤0.003 (`npm run backtest:ensemble`) — the recent-window
 xG/xA already carries that information — so no ensemble ships.
 
+### What it would have scored (`npm run backtest:season`)
+
+Playing 2025/26 by the app's advice — squad builder opens the team, best free
+transfer weekly, never a hit, XI and captain by projection, auto-subs applied:
+
+| | points |
+|---|---|
+| the app's advice, GW6–38 | **1850** |
+| average manager, GW6–38 | 1637 |
+| **difference** | **+213** (ahead in 25 of 33 gameweeks) |
+
+GW1–5 can't be modelled — FPL's data resets each summer, so the engine has no
+football to project from until a few weeks in. Assuming a merely average start
+(258), that's ~**2108 points**, which on 2025/26's real finishing ladder
+(read off the overall league) is a rank of roughly **2.1M of 9.5M — top ~22%**.
+
+Read that as a floor, not a ceiling. **No chips are simulated** (no Triple
+Captain, Bench Boost, Free Hit or Wildcard), there's no vice-captain fallback,
+and no price rises to fund upgrades — all of which the real game and the app's
+own chips page give you. The honest ceiling is unmeasured; the honest floor is
+top-quarter with the engine on autopilot and its two most valuable levers
+switched off.
+
+Caveats worth keeping in view: this is **one season**, the only one FPL's API
+exposes per-gameweek, so it's a single sample and not a track record. The
+"average manager" benchmark is dragged down by abandoned teams, which is why
+1895 points — the mean — sits at rank ~6M rather than mid-table.
+
 ## 2. The decision layers
 
 ### Transfers (`/transfers`)

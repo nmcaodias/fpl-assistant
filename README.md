@@ -73,6 +73,7 @@ npm run backtest:calibrate  # fit + validate the calibration line
 npm run backtest:strategies # planner vs single-swap vs never-transfer, on actuals
 npm run backtest:squad      # squad builder vs template squads, on actuals
 npm run backtest:ensemble   # do ICT/form blends beat the engine? (no)
+npm run backtest:season     # play a whole season by the app's advice, on actuals
 ```
 
 It measures projection accuracy (per player-gameweek) and transfer-decision
