@@ -57,6 +57,22 @@ luck — the optimizer's curse, which calibration can't fix because it only exis
 in the argmax. Simulated against last season, hits taken on a 4-point edge lost
 ~9 points per 5 gameweeks versus never hitting at all.
 
+The **squad builder** (`src/lib/squad-builder.ts`, `/squad`) picks the best
+legal 15 for a budget — 2/5/5/3, at most three per club — following the
+integer-programming formulation in the FPL literature (Ghasemi et al.,
+arXiv:2505.02170): the objective is the starting XI's horizon xPts with the
+captain counted twice and bench slots discounted to 15%. The captain term is
+what buys a premium a pure value-per-pound squad would skip; the bench discount
+is why cheap enablers appear there without a hard-coded budget split. Solved by
+greedy seeds + steepest-ascent swap search (milliseconds, all constraints
+uniform). On reconstructed last-season windows it out-scored feasible
+points-per-pound template squads in 7 of 7 trials on actual points.
+
+The papers' predictive signals were tested before being adopted
+(`scripts/backtest/ensemble-test.ts`): blending ICT index or form into the
+engine's ranking added ≤0.003 spearman — the engine's recent-window xG/xA
+already carries that information — so the ranking model stays as is.
+
 Chip advice
 (`src/lib/chips.ts`) sits on top: Triple Captain targets the best
 single-player gameweek, Bench Boost the best full-15 gameweek, Free Hit the
