@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Bootstrap, EntryData, Fixture } from "./types";
+import type { Bootstrap, EntryData, Fixture, PlayerHistories } from "./types";
 
 // Session-lived cache so navigating between pages doesn't refetch.
 const jsonCache = new Map<string, unknown>();
@@ -65,6 +65,19 @@ export const useBootstrap = () => useJson<Bootstrap>("/api/fpl/bootstrap");
 export const useFixtures = () => useJson<Fixture[]>("/api/fpl/fixtures");
 export const useEntry = (teamId: number | null) =>
   useJson<EntryData>(teamId ? `/api/fpl/entry/${teamId}` : null);
+
+/**
+ * Recent per-match history for a set of players. Ids are sorted so the same
+ * set produces the same url however the caller ordered it, which keeps the
+ * session cache hitting. Costs one upstream request per id — pass a squad or
+ * a shortlist, never the whole market.
+ */
+export const usePlayerHistories = (ids: number[]) =>
+  useJson<PlayerHistories>(
+    ids.length > 0
+      ? `/api/fpl/players?ids=${[...ids].sort((a, b) => a - b).join(",")}`
+      : null,
+  );
 
 const TEAM_ID_KEY = "fpl-team-id";
 

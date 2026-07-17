@@ -7,8 +7,16 @@ import {
   formFactor,
   HIT_COST,
   projectPlayers,
+  summariseHistories,
+  summariseRecent,
 } from "./projection";
-import { makeEvent, makeFixture, makePlayer, makeTeam } from "./test-factories";
+import {
+  makeEvent,
+  makeFixture,
+  makeHistoryRow,
+  makePlayer,
+  makeTeam,
+} from "./test-factories";
 
 describe("buildProjectionContext", () => {
   it("picks the event flagged is_next", () => {
@@ -182,6 +190,42 @@ describe("formFactor", () => {
   });
 });
 
+describe("summariseRecent", () => {
+  it("totals a window's matches, minutes and underlying stats", () => {
+    const w = summariseRecent([
+      makeHistoryRow({ minutes: 90, starts: 1, expected_goals: "0.4", bonus: 3 }),
+      makeHistoryRow({ minutes: 45, starts: 0, expected_assists: "0.2", saves: 2 }),
+      makeHistoryRow({ minutes: 0, starts: 0, defensive_contribution: 0 }),
+    ]);
+    expect(w).toEqual({
+      matches: 3,
+      minutes: 135,
+      starts: 1,
+      xg: 0.4,
+      xa: 0.2,
+      dc: 0,
+      saves: 2,
+      bonus: 3,
+    });
+  });
+
+  it("counts an unused match as a match with zero minutes", () => {
+    // The denominator is team matches, so benched games must drag the average
+    // down rather than vanish.
+    const w = summariseRecent([
+      makeHistoryRow({ minutes: 90 }),
+      makeHistoryRow({ minutes: 0, starts: 0 }),
+    ]);
+    expect(w.matches).toBe(2);
+    expect(w.minutes).toBe(90);
+  });
+
+  it("summarises a histories map keyed by numeric player id", () => {
+    const map = summariseHistories({ 7: [makeHistoryRow({ minutes: 90 })] });
+    expect(map.get(7)?.minutes).toBe(90);
+  });
+});
+
 describe("projectPlayers", () => {
   it("computes epPerMatch from underlying rates for a fully available, fully-minuted player", () => {
     const events = [makeEvent({ id: 1, is_next: true })];
@@ -285,6 +329,114 @@ describe("projectPlayers", () => {
     expect(h.horizonEp).toBeGreaterThan(c.horizonEp);
   });
 
+  it("lifts a mid-season starter whose season minutes understate their role", () => {
+    // The flaw the recent window exists to fix: 10 team games, but he only
+    // broke into the side for the last 5 — season average says ~45 minutes a
+    // match, the recent window says 90.
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const fixtures = [makeFixture({ event: 1, team_h: 10, team_a: 20 })];
+    const player = makePlayer({ team: 10, status: "a", minutes: 450 });
+    const ctx = buildProjectionContext(fixtures, events, []);
+    ctx.gamesPlayed[10] = 10;
+
+    const seasonOnly = projectPlayers([player], ctx, 1).get(player.id)!;
+    const recent = new Map([
+      [player.id, summariseRecent(Array.from({ length: 5 }, () => makeHistoryRow({ minutes: 90 })))],
+    ]);
+    const withRecent = projectPlayers([player], ctx, 1, recent).get(player.id)!;
+
+    expect(seasonOnly.usedRecent).toBe(false);
+    expect(seasonOnly.xMins).toBe(45);
+    expect(withRecent.usedRecent).toBe(true);
+    // 450 recent minutes -> w = 450/720 = 0.625, so 0.625*90 + 0.375*45 ≈ 73.
+    expect(withRecent.xMins).toBe(73);
+    expect(withRecent.horizonEp).toBeGreaterThan(seasonOnly.horizonEp);
+  });
+
+  it("weights a thin recent window toward the season baseline", () => {
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const fixtures = [makeFixture({ event: 1, team_h: 10, team_a: 20 })];
+    const player = makePlayer({ team: 10, status: "a", minutes: 450 });
+    const ctx = buildProjectionContext(fixtures, events, []);
+    ctx.gamesPlayed[10] = 10;
+
+    // One 90-minute cameo in a 5-match window: w = 90/360 = 0.25, so the
+    // season's 45' should still dominate -> 0.25*18 + 0.75*45 ≈ 38.
+    const rows = [
+      makeHistoryRow({ minutes: 90 }),
+      ...Array.from({ length: 4 }, () => makeHistoryRow({ minutes: 0, starts: 0 })),
+    ];
+    const recent = new Map([[player.id, summariseRecent(rows)]]);
+    const p = projectPlayers([player], ctx, 1, recent).get(player.id)!;
+    expect(p.xMins).toBe(38);
+  });
+
+  it("ignores a recent window with no minutes and falls back to form", () => {
+    // A fit player who hasn't featured: the window can't produce a rate, so the
+    // season rates plus the form proxy handle him instead.
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const fixtures = [makeFixture({ event: 1, team_h: 10, team_a: 20 })];
+    const player = makePlayer({
+      team: 10,
+      status: "a",
+      minutes: 900,
+      points_per_game: "5.0",
+      form: "0.0", // dropped, not injured
+    });
+    const ctx = buildProjectionContext(fixtures, events, []);
+    ctx.gamesPlayed[10] = 10;
+
+    const recent = new Map([
+      [
+        player.id,
+        summariseRecent(Array.from({ length: 5 }, () => makeHistoryRow({ minutes: 0, starts: 0 }))),
+      ],
+    ]);
+    const p = projectPlayers([player], ctx, 1, recent).get(player.id)!;
+    expect(p.usedRecent).toBe(false);
+    expect(p.form).toBe(0.6); // form proxy still cuts him
+  });
+
+  it("drops the form proxy when a real recent window fed the rates", () => {
+    // Both signals describe recency; applying them together would double-count.
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const fixtures = [makeFixture({ event: 1, team_h: 10, team_a: 20 })];
+    const player = makePlayer({
+      team: 10,
+      status: "a",
+      minutes: 900,
+      points_per_game: "5.0",
+      form: "1.0", // would otherwise force the 0.6 floor
+    });
+    const ctx = buildProjectionContext(fixtures, events, []);
+    ctx.gamesPlayed[10] = 10;
+
+    const recent = new Map([
+      [player.id, summariseRecent([makeHistoryRow({ minutes: 90 })])],
+    ]);
+    const p = projectPlayers([player], ctx, 1, recent).get(player.id)!;
+    expect(p.usedRecent).toBe(true);
+    expect(p.form).toBe(1);
+  });
+
+  it("projects only the players it is given a window for, leaving others on season rates", () => {
+    const events = [makeEvent({ id: 1, is_next: true })];
+    const fixtures = [makeFixture({ event: 1, team_h: 10, team_a: 20 })];
+    const base = { team: 10, status: "a", minutes: 450 } as const;
+    const refined = makePlayer({ ...base, id: 1 });
+    const plain = makePlayer({ ...base, id: 2 });
+    const ctx = buildProjectionContext(fixtures, events, []);
+    ctx.gamesPlayed[10] = 10;
+
+    const recent = new Map([
+      [1, summariseRecent(Array.from({ length: 5 }, () => makeHistoryRow({ minutes: 90 })))],
+    ]);
+    const proj = projectPlayers([refined, plain], ctx, 1, recent);
+    expect(proj.get(1)!.usedRecent).toBe(true);
+    expect(proj.get(2)!.usedRecent).toBe(false);
+    expect(proj.get(2)!.xMins).toBe(45); // untouched season average
+  });
+
   it("does not apply a form cut between seasons, when FPL zeroes everyone's form", () => {
     const events = [makeEvent({ id: 1, finished: true })]; // season over, nextGw null
     // A regular starter whose form is 0 only because there's no football on.
@@ -372,6 +524,7 @@ describe("findUpgrades", () => {
       xMins,
       epPerMatch: horizonEp,
       form: 1,
+      usedRecent: false,
       perGw: [],
       horizonEp,
     };

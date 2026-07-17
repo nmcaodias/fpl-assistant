@@ -222,4 +222,93 @@ describe("fpl-server", () => {
       await expect(getEntry(999)).rejects.toMatchObject({ status: 404 });
     });
   });
+
+  describe("getPlayerHistories", () => {
+    const historyRow = (round: number) => ({
+      round,
+      minutes: 90,
+      starts: 1,
+      expected_goals: "0.1",
+      expected_assists: "0.2",
+      defensive_contribution: 3,
+      saves: 0,
+      bonus: 1,
+      total_points: 5,
+      junk_field: "drop me",
+    });
+
+    it("fetches each player's element-summary, keeping only the last 5 matches", async () => {
+      const { getPlayerHistories } = await freshModule();
+      // Ten matches upstream; only the most recent five make up the window.
+      const rows = Array.from({ length: 10 }, (_, i) => historyRow(i + 1));
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue(jsonResponse({ history: rows }));
+
+      const data = await getPlayerHistories([7]);
+
+      expect(fetch).toHaveBeenCalledWith(
+        "https://fantasy.premierleague.com/api/element-summary/7/",
+        expect.objectContaining({ cache: "no-store" }),
+      );
+      expect(data[7]).toHaveLength(5);
+      expect(data[7].map((r) => (r as { round: number }).round)).toEqual([6, 7, 8, 9, 10]);
+      // Trimmed to known fields.
+      expect(data[7][0]).not.toHaveProperty("junk_field");
+      expect(data[7][0]).toMatchObject({ round: 6, minutes: 90, defensive_contribution: 3 });
+    });
+
+    it("keeps a short history as-is", async () => {
+      const { getPlayerHistories } = await freshModule();
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+        jsonResponse({ history: [historyRow(1), historyRow(2)] }),
+      );
+
+      const data = await getPlayerHistories([7]);
+      expect(data[7]).toHaveLength(2);
+    });
+
+    it("omits a player whose fetch fails rather than failing the whole batch", async () => {
+      const { getPlayerHistories } = await freshModule();
+      (fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) =>
+        Promise.resolve(
+          url.includes("/element-summary/2/")
+            ? jsonResponse({}, false, 500)
+            : jsonResponse({ history: [historyRow(1)] }),
+        ),
+      );
+
+      const data = await getPlayerHistories([1, 2, 3]);
+
+      expect(Object.keys(data).sort()).toEqual(["1", "3"]);
+    });
+
+    it("de-duplicates ids and caps the batch at MAX_HISTORY_IDS", async () => {
+      const { getPlayerHistories, MAX_HISTORY_IDS } = await freshModule();
+      (fetch as ReturnType<typeof vi.fn>).mockResolvedValue(jsonResponse({ history: [] }));
+
+      await getPlayerHistories([4, 4, 4, 9]);
+      expect(fetch).toHaveBeenCalledTimes(2);
+
+      (fetch as ReturnType<typeof vi.fn>).mockClear();
+      await getPlayerHistories(Array.from({ length: MAX_HISTORY_IDS + 50 }, (_, i) => i + 1000));
+      expect(fetch).toHaveBeenCalledTimes(MAX_HISTORY_IDS);
+    });
+
+    it("never runs more than 5 upstream requests at once", async () => {
+      const { getPlayerHistories } = await freshModule();
+      let inFlight = 0;
+      let peak = 0;
+      (fetch as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 1));
+        inFlight--;
+        return jsonResponse({ history: [] });
+      });
+
+      await getPlayerHistories(Array.from({ length: 20 }, (_, i) => i + 1));
+
+      expect(peak).toBeLessThanOrEqual(5);
+      expect(fetch).toHaveBeenCalledTimes(20);
+    });
+  });
 });

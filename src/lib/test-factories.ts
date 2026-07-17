@@ -1,4 +1,4 @@
-import type { Event, Fixture, Player, Team } from "./types";
+import type { Event, Fixture, HistoryRow, Player, Team } from "./types";
 
 let idSeq = 1;
 
@@ -39,6 +39,21 @@ export function makeFixture(overrides: Partial<Fixture> = {}): Fixture {
     finished: false,
     team_h_score: null,
     team_a_score: null,
+    ...overrides,
+  };
+}
+
+export function makeHistoryRow(overrides: Partial<HistoryRow> = {}): HistoryRow {
+  return {
+    round: 1,
+    minutes: 90,
+    starts: 1,
+    expected_goals: "0.0",
+    expected_assists: "0.0",
+    defensive_contribution: 0,
+    saves: 0,
+    bonus: 0,
+    total_points: 2,
     ...overrides,
   };
 }

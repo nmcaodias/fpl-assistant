@@ -6,11 +6,12 @@ import { ErrorNote, FormBadge, Loading, ScoreBar, SeasonBanner, StatusBadge } fr
 import {
   buildProjectionContext,
   projectPlayers,
+  summariseHistories,
   type PlayerProjection,
   type ProjectionContext,
 } from "@/lib/projection";
-import type { Bootstrap, EntryData, Fixture } from "@/lib/types";
-import { useBootstrap, useEntry, useFixtures } from "@/lib/useFpl";
+import type { Bootstrap, EntryData, Fixture, PlayerHistories } from "@/lib/types";
+import { useBootstrap, useEntry, useFixtures, usePlayerHistories } from "@/lib/useFpl";
 
 export default function CaptaincyPage() {
   return <TeamIdGate>{(teamId) => <Captaincy teamId={teamId} />}</TeamIdGate>;
@@ -21,13 +22,28 @@ function Captaincy({ teamId }: { teamId: number }) {
   const fixtures = useFixtures();
   const entry = useEntry(teamId);
 
+  // Recent match data for the squad only — 15 upstream requests. It arrives
+  // after the rest, so the ranking renders on season rates first and sharpens
+  // when the windows land rather than blocking behind them.
+  const squadIds = useMemo(
+    () => entry.data?.picks?.map((p) => p.element) ?? [],
+    [entry.data],
+  );
+  const histories = usePlayerHistories(squadIds);
+
   const error = bootstrap.error ?? fixtures.error ?? entry.error;
   if (error) return <ErrorNote message={error} />;
   if (!bootstrap.data || !fixtures.data || !entry.data)
     return <Loading what="captaincy picks" />;
 
   return (
-    <Ranking bootstrap={bootstrap.data} fixtures={fixtures.data} entry={entry.data} />
+    <Ranking
+      bootstrap={bootstrap.data}
+      fixtures={fixtures.data}
+      entry={entry.data}
+      histories={histories.data}
+      refining={histories.loading}
+    />
   );
 }
 
@@ -35,17 +51,22 @@ function Ranking({
   bootstrap,
   fixtures,
   entry,
+  histories,
+  refining,
 }: {
   bootstrap: Bootstrap;
   fixtures: Fixture[];
   entry: EntryData;
+  histories: PlayerHistories | null;
+  refining: boolean;
 }) {
   const result = useMemo(() => {
     if (!entry.picks) return null;
     const ctx = buildProjectionContext(fixtures, bootstrap.events, bootstrap.teams);
     const squadIds = new Set(entry.picks.map((p) => p.element));
     const squad = bootstrap.players.filter((p) => squadIds.has(p.id));
-    const projections = projectPlayers(squad, ctx, 1);
+    const recent = histories ? summariseHistories(histories) : undefined;
+    const projections = projectPlayers(squad, ctx, 1, recent);
     const ranked = [...projections.values()].sort((a, b) => {
       // Next-GW xPts when fixtures exist, per-match xPts between seasons.
       const av = ctx.nextGw !== null ? (a.perGw[0]?.ep ?? 0) : a.epPerMatch;
@@ -53,7 +74,7 @@ function Ranking({
       return bv - av;
     });
     return { ranked, ctx };
-  }, [bootstrap, fixtures, entry]);
+  }, [bootstrap, fixtures, entry, histories]);
 
   if (!result)
     return (
@@ -78,6 +99,7 @@ function Ranking({
         captain doubles this. High-owned picks protect your rank (the field has
         them too); low-owned picks are differentials that move you up when they
         pay off.
+        {refining && " Sharpening with each player's last 5 matches…"}
       </p>
 
       <ol className="space-y-2">
@@ -154,7 +176,7 @@ function CaptainRow({
     fixtureText,
     gwFixtures.length >= 2 ? "DOUBLE" : null,
     `xGI/90 ${p.expected_goal_involvements_per_90.toFixed(2)}`,
-    `${proj.xMins}′ avg`,
+    proj.usedRecent ? `${proj.xMins}′ avg (last 5)` : `${proj.xMins}′ avg`,
   ]
     .filter(Boolean)
     .join(" · ");

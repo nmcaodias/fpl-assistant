@@ -103,6 +103,80 @@ export async function getBootstrap() {
   };
 }
 
+// --- Recent per-match history ---
+
+const HISTORY_FIELDS = [
+  "round",
+  "minutes",
+  "starts",
+  "expected_goals",
+  "expected_assists",
+  "defensive_contribution",
+  "saves",
+  "bonus",
+  "total_points",
+] as const;
+
+/**
+ * How many of a player's most recent matches make up the recent window.
+ * Matches, not gameweeks: element-summary carries one row per fixture the
+ * player's team played — including ones they sat out at 0 minutes — so a
+ * double gameweek contributes two rows and a blank none. That makes the row
+ * count the right denominator for per-match rates.
+ */
+const RECENT_MATCHES = 5;
+
+/** Most upstream requests one batch may fan out to. */
+export const MAX_HISTORY_IDS = 100;
+
+/** Simultaneous upstream requests; kept low to stay a polite API client. */
+const HISTORY_CONCURRENCY = 5;
+
+interface RawElementSummary {
+  history: Record<string, unknown>[];
+}
+
+/** Run `fn` over `items` with at most `limit` calls in flight at a time. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+/**
+ * Recent matches for several players, keyed by player id. The FPL API has no
+ * batch endpoint, so this costs one upstream request per player — callers must
+ * keep the list short (see MAX_HISTORY_IDS). A player whose fetch fails is
+ * omitted rather than failing the batch: the projection engine falls back to
+ * season rates for anyone it has no window for.
+ */
+export async function getPlayerHistories(ids: number[]) {
+  const unique = [...new Set(ids)].slice(0, MAX_HISTORY_IDS);
+  const results = await mapWithConcurrency(unique, HISTORY_CONCURRENCY, async (id) => {
+    try {
+      const raw = await fpl<RawElementSummary>(`/element-summary/${id}/`);
+      return [id, raw.history.slice(-RECENT_MATCHES).map((h) => pick(h, HISTORY_FIELDS))] as const;
+    } catch {
+      return null;
+    }
+  });
+
+  const out: Record<number, unknown[]> = {};
+  for (const r of results) if (r) out[r[0]] = r[1];
+  return out;
+}
+
 const FIXTURE_FIELDS = [
   "id",
   "event",

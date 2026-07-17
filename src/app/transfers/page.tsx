@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import TeamIdGate from "@/components/TeamIdGate";
 import { ErrorNote, FormBadge, Loading, SeasonBanner, StatusBadge } from "@/components/ui";
 import { money } from "@/lib/format";
@@ -9,14 +9,22 @@ import {
   findUpgrades,
   HIT_COST,
   projectPlayers,
+  summariseHistories,
   type PlayerProjection,
+  type RecentWindow,
   type Upgrade,
 } from "@/lib/projection";
 import type { Bootstrap, EntryData, Fixture } from "@/lib/types";
 import { POSITION_NAMES } from "@/lib/types";
-import { useBootstrap, useEntry, useFixtures } from "@/lib/useFpl";
+import { useBootstrap, useEntry, useFixtures, usePlayerHistories } from "@/lib/useFpl";
 
 const HORIZON = 5;
+/**
+ * Upgrade candidates per squad slot to pull recent match data for. Each id
+ * costs an upstream request, so this trades fan-out for precision: 15 squad
+ * players plus up to 3 candidates each stays well inside the batch cap.
+ */
+const REFINED_CANDIDATES = 3;
 
 export default function TransfersPage() {
   return <TeamIdGate>{(teamId) => <Transfers teamId={teamId} />}</TeamIdGate>;
@@ -46,37 +54,76 @@ function Analysis({
   fixtures: Fixture[];
   entry: EntryData;
 }) {
-  const analysis = useMemo(() => {
-    if (!entry.picks) return null;
-    const ctx = buildProjectionContext(fixtures, bootstrap.events, bootstrap.teams);
-    const market = projectPlayers(bootstrap.players, ctx, HORIZON);
+  const ctx = useMemo(
+    () => buildProjectionContext(fixtures, bootstrap.events, bootstrap.teams),
+    [fixtures, bootstrap],
+  );
 
-    const squadIds = new Set(entry.picks.map((p) => p.element));
-    const teamCounts: Record<number, number> = {};
-    for (const id of squadIds) {
-      const p = market.get(id)?.player;
-      if (p) teamCounts[p.team] = (teamCounts[p.team] ?? 0) + 1;
+  /**
+   * Build the squad rows and their upgrades from a market projection. Runs
+   * twice: once on season rates to decide which players are worth fetching
+   * recent data for, then again once that data lands.
+   */
+  const analyse = useCallback(
+    (recent?: Map<number, RecentWindow>) => {
+      if (!entry.picks) return null;
+      const market = projectPlayers(bootstrap.players, ctx, HORIZON, recent);
+
+      const squadIds = new Set(entry.picks.map((p) => p.element));
+      const teamCounts: Record<number, number> = {};
+      for (const id of squadIds) {
+        const p = market.get(id)?.player;
+        if (p) teamCounts[p.team] = (teamCounts[p.team] ?? 0) + 1;
+      }
+      const bank = entry.entryHistory?.bank ?? 0;
+
+      // Squad ranked worst-first: the top of the list is who to consider selling.
+      const squad = [...squadIds]
+        .map((id) => market.get(id))
+        .filter((s): s is PlayerProjection => s !== undefined)
+        .sort((a, b) => a.horizonEp - b.horizonEp);
+
+      const rows = squad.map((s) => ({
+        out: s,
+        upgrades: findUpgrades(
+          s,
+          market,
+          squadIds,
+          teamCounts,
+          s.player.now_cost + bank,
+          REFINED_CANDIDATES,
+        ),
+      }));
+
+      // Best single move overall — the "if you only do one thing" answer.
+      const bestMove = rows
+        .flatMap((r) => r.upgrades.map((u) => ({ out: r.out, u })))
+        .sort((a, b) => b.u.deltaEp - a.u.deltaEp)[0];
+
+      return { rows, bank, bestMove, ctx };
+    },
+    [bootstrap, entry, ctx],
+  );
+
+  // Pass 1 — season rates only, purely to choose a shortlist worth fetching.
+  const shortlist = useMemo(() => {
+    const first = analyse();
+    if (!first) return [];
+    const ids = new Set<number>();
+    for (const row of first.rows) {
+      ids.add(row.out.player.id);
+      for (const u of row.upgrades) ids.add(u.candidate.player.id);
     }
-    const bank = entry.entryHistory?.bank ?? 0;
+    return [...ids];
+  }, [analyse]);
 
-    // Squad ranked worst-first: the top of the list is who to consider selling.
-    const squad = [...squadIds]
-      .map((id) => market.get(id))
-      .filter((s): s is PlayerProjection => s !== undefined)
-      .sort((a, b) => a.horizonEp - b.horizonEp);
+  const histories = usePlayerHistories(shortlist);
 
-    const rows = squad.map((s) => ({
-      out: s,
-      upgrades: findUpgrades(s, market, squadIds, teamCounts, s.player.now_cost + bank),
-    }));
-
-    // Best single move overall — the "if you only do one thing" answer.
-    const bestMove = rows
-      .flatMap((r) => r.upgrades.map((u) => ({ out: r.out, u })))
-      .sort((a, b) => b.u.deltaEp - a.u.deltaEp)[0];
-
-    return { rows, bank, bestMove, ctx };
-  }, [bootstrap, fixtures, entry]);
+  // Pass 2 — the same analysis, with real recent data for the shortlist.
+  const analysis = useMemo(() => {
+    const recent = histories.data ? summariseHistories(histories.data) : undefined;
+    return analyse(recent);
+  }, [analyse, histories.data]);
 
   if (!analysis)
     return (
@@ -98,6 +145,8 @@ function Analysis({
         odds, and fixture difficulty. A move is worth a −{HIT_COST} hit only if
         it gains more than {HIT_COST} xPts. Prices are market values, not your
         personal selling prices.
+        {histories.loading &&
+          " Sharpening your squad and its candidates with their last 5 matches…"}
       </p>
 
       {analysis.bestMove && (

@@ -7,7 +7,7 @@
 // fixtures; blanks are zero. This is what "thinking like a top manager" means
 // mechanically: decisions compare points over a horizon, not abstract scores.
 
-import type { Event, Fixture, Player, Position, Team } from "./types";
+import type { Event, Fixture, HistoryRow, Player, PlayerHistories, Position, Team } from "./types";
 
 export interface UpcomingFixture {
   event: number;
@@ -146,6 +146,61 @@ export function formFactor(
   return clamp(1 + (ratio - 1) * FORM_WEIGHT, FORM_FACTOR_MIN, FORM_FACTOR_MAX);
 }
 
+// --- Recent window (element-summary history) ---
+
+/**
+ * Shrinkage prior for recent rates, in minutes. A recent window is a small
+ * sample, so it's blended with the season baseline rather than replacing it:
+ * at RECENT_PRIOR_MINUTES of recent football the two carry equal weight, and
+ * a thin window barely moves the season number.
+ */
+const RECENT_PRIOR_MINUTES = 270;
+
+/** A player's recent matches reduced to totals. */
+export interface RecentWindow {
+  /** Team matches covered — the denominator for per-match figures */
+  matches: number;
+  minutes: number;
+  starts: number;
+  xg: number;
+  xa: number;
+  dc: number;
+  saves: number;
+  bonus: number;
+}
+
+/** Total a player's recent match rows into a window. */
+export function summariseRecent(rows: HistoryRow[]): RecentWindow {
+  const w: RecentWindow = {
+    matches: rows.length,
+    minutes: 0,
+    starts: 0,
+    xg: 0,
+    xa: 0,
+    dc: 0,
+    saves: 0,
+    bonus: 0,
+  };
+  for (const r of rows) {
+    w.minutes += r.minutes;
+    w.starts += r.starts;
+    w.xg += parseNum(r.expected_goals);
+    w.xa += parseNum(r.expected_assists);
+    w.dc += r.defensive_contribution;
+    w.saves += r.saves;
+    w.bonus += r.bonus;
+  }
+  return w;
+}
+
+export function summariseHistories(histories: PlayerHistories): Map<number, RecentWindow> {
+  const out = new Map<number, RecentWindow>();
+  for (const [id, rows] of Object.entries(histories)) {
+    out.set(Number(id), summariseRecent(rows));
+  }
+  return out;
+}
+
 /** Per-player rates precomputed once, independent of fixture. */
 interface Rates {
   m: number; // expected share of 90 minutes when fit
@@ -158,25 +213,58 @@ interface Rates {
   bonusPerMatch: number;
   concededPerMatch: number;
   baseAvailability: number;
+  /** True when a recent window informed these rates (see buildRates). */
+  usedRecent: boolean;
 }
 
-function buildRates(p: Player, ctx: ProjectionContext): Rates {
+/**
+ * Rates for one player. Without a recent window these are season averages,
+ * which understate anyone who arrived or became a starter mid-season. Given a
+ * window, the recent numbers are blended in by sample size, which is what
+ * corrects that: a player who has started the last five matches gets recent
+ * minutes regardless of the months he spent on the bench.
+ */
+function buildRates(p: Player, ctx: ProjectionContext, recent?: RecentWindow): Rates {
   const teamGames = ctx.gamesPlayed[p.team] ?? 0;
-  // Season average minutes per team match. Understates players who arrived or
-  // became starters mid-season — the accepted trade-off for using one API call.
-  const xMins = teamGames > 0 ? p.minutes / teamGames : 0;
-  const m = clamp(xMins / 90, 0, 1);
+  const seasonXMins = teamGames > 0 ? p.minutes / teamGames : 0;
+
+  let xMins = seasonXMins;
+  let xg90 = p.expected_goals_per_90 || 0;
+  let xa90 = p.expected_assists_per_90 || 0;
+  let saves90 = p.saves_per_90 || 0;
+  let dc90 = p.defensive_contribution_per_90 || 0;
+  let bonusPerMatch = p.minutes > 0 ? p.bonus / Math.max(1, p.minutes / 90) : 0;
+  let usedRecent = false;
+
+  // A window with no minutes says nothing about rates (and can't form a
+  // denominator), so it's ignored — those players keep season rates and are
+  // handled by the form factor and availability model instead.
+  if (recent && recent.matches > 0 && recent.minutes > 0) {
+    const w = recent.minutes / (recent.minutes + RECENT_PRIOR_MINUTES);
+    const per90 = (total: number) => (total / recent.minutes) * 90;
+    const blend = (recentVal: number, seasonVal: number) => w * recentVal + (1 - w) * seasonVal;
+
+    xMins = blend(recent.minutes / recent.matches, seasonXMins);
+    xg90 = blend(per90(recent.xg), xg90);
+    xa90 = blend(per90(recent.xa), xa90);
+    saves90 = blend(per90(recent.saves), saves90);
+    dc90 = blend(per90(recent.dc), dc90);
+    bonusPerMatch = blend(recent.bonus / recent.matches, bonusPerMatch);
+    usedRecent = true;
+  }
+
   return {
-    m,
+    m: clamp(xMins / 90, 0, 1),
     p60: clamp((xMins - 25) / 50, 0, 1),
     pApp: clamp(xMins / 45, 0, 1),
-    xg90: p.expected_goals_per_90 || 0,
-    xa90: p.expected_assists_per_90 || 0,
-    saves90: p.saves_per_90 || 0,
-    dc90: p.defensive_contribution_per_90 || 0,
-    bonusPerMatch: p.minutes > 0 ? p.bonus / Math.max(1, p.minutes / 90) : 0,
+    xg90,
+    xa90,
+    saves90,
+    dc90,
+    bonusPerMatch,
     concededPerMatch: ctx.concededPerMatch[p.team] ?? 1.3,
     baseAvailability: baseAvailability(p),
+    usedRecent,
   };
 }
 
@@ -232,8 +320,12 @@ export interface PlayerProjection {
    * season rates, before any form adjustment — the transparent baseline) */
   epPerMatch: number;
   /** Recent-form multiplier applied to perGw/horizonEp; 1 = on season baseline,
-   * >1 in form, <1 out of form (see formFactor) */
+   * >1 in form, <1 out of form (see formFactor). Always 1 when usedRecent, as
+   * real recent rates supersede the proxy. */
   form: number;
+  /** True when true per-match recent data fed these rates, rather than season
+   * averages plus the form proxy */
+  usedRecent: boolean;
   /** xPts per gameweek from nextGw, availability-, fixture-, and form-adjusted */
   perGw: GwProjection[];
   /** Sum of perGw over the requested horizon */
@@ -244,21 +336,28 @@ export interface PlayerProjection {
  * Project all `players` over the next `horizon` gameweeks. When the game is
  * between seasons (no fixtures), perGw is empty and horizonEp falls back to
  * epPerMatch × horizon so rankings still work.
+ *
+ * `recent` holds true per-match windows for whichever players we could afford
+ * to fetch (one upstream request each, so usually a squad or a shortlist).
+ * Players without one fall back to season rates nudged by the form proxy.
  */
 export function projectPlayers(
   players: Player[],
   ctx: ProjectionContext,
   horizon: number,
+  recent?: Map<number, RecentWindow>,
 ): Map<number, PlayerProjection> {
   const out = new Map<number, PlayerProjection>();
   for (const p of players) {
-    const r = buildRates(p, ctx);
+    const r = buildRates(p, ctx, recent?.get(p.id));
     const epPerMatch = epForMatch(p, r, 3);
-    // Recent form only means something while the season is running. Between
-    // seasons FPL zeroes every player's `form` (no matches in the window), so
-    // applying it would wrongly cut everyone to the floor — leave it neutral.
+    // The form factor is a proxy for recency built from season-wide numbers.
+    // Where a real recent window already fed the rates it would double-count,
+    // so it only applies to players without one. Between seasons it's off
+    // entirely: FPL zeroes every player's `form` (no matches in the window),
+    // which would otherwise cut the whole market to the floor.
     const ff =
-      ctx.nextGw !== null
+      ctx.nextGw !== null && !r.usedRecent
         ? formFactor(parseNum(p.form), parseNum(p.points_per_game), p.minutes, p.status)
         : 1;
     const epNext = parseNum(p.ep_next);
@@ -296,6 +395,7 @@ export function projectPlayers(
       xMins: Math.round(r.m * 90),
       epPerMatch: round1(epPerMatch),
       form: Math.round(ff * 100) / 100,
+      usedRecent: r.usedRecent,
       perGw,
       horizonEp: round1(horizonEp),
     });

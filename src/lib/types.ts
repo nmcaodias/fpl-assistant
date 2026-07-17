@@ -81,6 +81,28 @@ export interface Bootstrap {
   chips: ChipDef[];
 }
 
+/**
+ * One match in a player's recent window, from element-summary. There is a row
+ * per fixture the player's team played — 0 minutes when they were unused — so
+ * a double gameweek yields two rows for a `round` and a blank yields none.
+ */
+export interface HistoryRow {
+  round: number;
+  minutes: number;
+  starts: number;
+  /** Numeric strings in the FPL API */
+  expected_goals: string;
+  expected_assists: string;
+  /** Qualifying defensive actions in the match (2025/26 scoring rule) */
+  defensive_contribution: number;
+  saves: number;
+  bonus: number;
+  total_points: number;
+}
+
+/** Recent matches keyed by player id; players we couldn't fetch are absent. */
+export type PlayerHistories = Record<number, HistoryRow[]>;
+
 export interface Fixture {
   id: number;
   event: number | null;

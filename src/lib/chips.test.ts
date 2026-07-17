@@ -27,6 +27,7 @@ function makeProjection(
     xMins: 90,
     epPerMatch: 5,
     form: 1,
+    usedRecent: false,
     perGw,
     horizonEp: perGw.reduce((s, g) => s + g.ep, 0),
   };

@@ -22,12 +22,27 @@ Decisions come from an expected-points (xPts) engine (`src/lib/projection.ts`)
 that projects each player per future gameweek from underlying rates — xG/xA
 per 90, projected minutes, Poisson clean-sheet odds from team goals conceded,
 saves, defensive-contribution points (2025/26 rule), and bonus rate — adjusted
-per fixture by difficulty. The season-rate projection is then nudged toward
-recent form (a player's `form` relative to their own season average, bounded
-and regressed since it's a small sample) and, for the nearest gameweek,
-anchored partway to FPL's own `ep_next`. Double gameweeks sum both fixtures;
-blanks score zero; flagged players are assumed back within ~4 gameweeks. Chip
-advice
+per fixture by difficulty. For the nearest gameweek the projection is anchored
+partway to FPL's own `ep_next`. Double gameweeks sum both fixtures; blanks
+score zero; flagged players are assumed back within ~4 gameweeks.
+
+Season averages alone understate anyone who arrived or became a starter
+mid-season, so the engine layers recency on top in one of two ways:
+
+- **A real recent window**, where we can afford it. `/api/fpl/players?ids=…`
+  pulls each player's last 5 matches from `element-summary` and the engine
+  blends those rates into the season baseline by sample size (a thin window
+  barely moves the season number; five full matches roughly two-thirds
+  outweigh it). This costs one upstream request per player, so it's scoped to
+  your squad and its upgrade candidates — never the whole market.
+- **A form proxy**, for everyone else. A player's `form` relative to their own
+  season average, regressed and bounded since it's a small sample.
+
+The two never combine — both describe recency, so applying them together would
+double-count. The proxy is also off between seasons, when FPL zeroes every
+player's `form`.
+
+Chip advice
 (`src/lib/chips.ts`) sits on top: Triple Captain targets the best
 single-player gameweek, Bench Boost the best full-15 gameweek, Free Hit the
 worst blank, and the Wildcard is judged by how much xPts a rebuild adds.
