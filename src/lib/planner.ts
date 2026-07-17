@@ -85,29 +85,39 @@ for (let d = 3; d <= 5; d++)
  * Highest projected-points legal XI from a 15-man squad for one week.
  * `epOf` supplies each player's xPts for that week.
  */
+export function bestXi(
+  squad: PlayerProjection[],
+  epOf: (p: PlayerProjection) => number,
+): PlayerProjection[] {
+  const byPos = new Map<Position, PlayerProjection[]>([[1, []], [2, []], [3, []], [4, []]]);
+  for (const p of squad) byPos.get(p.player.element_type)?.push(p);
+  for (const ps of byPos.values()) ps.sort((a, b) => epOf(b) - epOf(a));
+
+  const take = (pos: Position, n: number) => byPos.get(pos)!.slice(0, n);
+  const sum = (ps: PlayerProjection[]) => ps.reduce((s, p) => s + epOf(p), 0);
+
+  const gk = take(1, 1);
+  let best: PlayerProjection[] = [];
+  let bestEp = -Infinity;
+  for (const [d, m, f] of FORMATIONS) {
+    if (byPos.get(2)!.length < d || byPos.get(3)!.length < m || byPos.get(4)!.length < f)
+      continue;
+    const xi = [...gk, ...take(2, d), ...take(3, m), ...take(4, f)];
+    const ep = sum(xi);
+    if (ep > bestEp) {
+      bestEp = ep;
+      best = xi;
+    }
+  }
+  return best;
+}
+
+/** Projected points of the best legal XI (see bestXi). */
 export function bestXiEp(
   squad: PlayerProjection[],
   epOf: (p: PlayerProjection) => number,
 ): number {
-  const byPos = new Map<Position, number[]>([[1, []], [2, []], [3, []], [4, []]]);
-  for (const p of squad) byPos.get(p.player.element_type)!.push(epOf(p));
-  for (const eps of byPos.values()) eps.sort((a, b) => b - a);
-
-  const prefix = (eps: number[], n: number) => {
-    let s = 0;
-    for (let i = 0; i < n && i < eps.length; i++) s += eps[i];
-    return s;
-  };
-
-  const gk = prefix(byPos.get(1)!, 1);
-  let best = 0;
-  for (const [d, m, f] of FORMATIONS) {
-    if (byPos.get(2)!.length < d || byPos.get(3)!.length < m || byPos.get(4)!.length < f)
-      continue;
-    const total = gk + prefix(byPos.get(2)!, d) + prefix(byPos.get(3)!, m) + prefix(byPos.get(4)!, f);
-    if (total > best) best = total;
-  }
-  return best;
+  return bestXi(squad, epOf).reduce((s, p) => s + epOf(p), 0);
 }
 
 // --- Beam search ---
