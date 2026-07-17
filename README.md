@@ -4,9 +4,13 @@ A web app that helps you make Fantasy Premier League decisions. Enter your FPL
 team ID once and get:
 
 - **My Team** — points, rank, squad value, bank, chips, and your full squad
+- **Squad Builder** — the best legal 15 for a budget, for the season launch
+  or a wildcard rebuild (no team ID needed)
 - **Transfers** — your squad ranked by projected points over the next 5
   gameweeks, with affordable, legal (max 3 per club) upgrades ranked by
   ΔxPts and an explicit "worth a −4 hit" verdict
+- **Planner** — a 5-gameweek transfer sequence: when to move, when to hold
+  and bank a free transfer, when a hit pays
 - **Captaincy** — your squad ranked by next-gameweek xPts, with
   template/differential ownership tags
 - **Chips** — when to play each remaining chip (Triple Captain, Bench
@@ -15,68 +19,30 @@ team ID once and get:
 - **Fixtures** — a fixture-difficulty grid for the next six gameweeks,
   easiest runs first
 
+## Documentation
+
+- **[How the engine makes decisions](docs/engine.md)** — the projection
+  formula, minutes and recency models, calibration, and each decision layer
+  (transfers and the hit rule, captaincy, planner, squad builder, chips),
+  with the backtest evidence behind every claim and the engine's known
+  blind spots.
+- **[Making decisions with the app](docs/using-the-app.md)** — the
+  manager's workflow: season launch, the weekly routine, how to read the
+  numbers and badges, and what to trust versus overrule.
+
 All data comes live from the official FPL API, proxied through `/api/fpl/*`
 route handlers (the FPL API blocks browser CORS) with a 5-minute cache.
 
 Decisions come from an expected-points (xPts) engine (`src/lib/projection.ts`)
 that projects each player per future gameweek from underlying rates — xG/xA
-per 90, projected minutes, Poisson clean-sheet odds from team goals conceded,
-saves, defensive-contribution points (2025/26 rule), and bonus rate — adjusted
-per fixture by difficulty. For the nearest gameweek the projection is anchored
-partway to FPL's own `ep_next`. Double gameweeks sum both fixtures; blanks
-score zero; flagged players are assumed back within ~4 gameweeks.
-
-Season averages alone understate anyone who arrived or became a starter
-mid-season, so the engine layers recency on top in one of two ways:
-
-- **A real recent window**, where we can afford it. `/api/fpl/players?ids=…`
-  pulls each player's last 5 matches from `element-summary` and the engine
-  blends those rates into the season baseline by sample size (a thin window
-  barely moves the season number; five full matches roughly two-thirds
-  outweigh it). This costs one upstream request per player, so it's scoped to
-  your squad and its upgrade candidates — never the whole market.
-- **A form proxy**, for everyone else. A player's `form` relative to their own
-  season average, regressed and bounded since it's a small sample.
-
-The two never combine — both describe recency, so applying them together would
-double-count. The proxy is also off between seasons, when FPL zeroes every
-player's `form`.
-
-Finally the raw projection is **calibrated** onto the scale points are really
-scored on. Backtesting showed it was over-spread — too confident at both ends:
-the top decile of 5-gameweek projections predicted 25.9 points and returned
-19.2, the bottom predicted 2.2 and returned 8.0. A straight line can't reorder
-anything, so rankings are untouched; what changes is every decision that reads
-an absolute gap. Coefficients are fitted walk-forward by
-`scripts/backtest/calibrate.ts` and re-derived each season.
-
-That correction is also why a −4 hit needs a much bigger edge than the 4 points
-it costs (`WORTH_A_HIT_GAIN`). The suggestion is the best of hundreds of
-candidate swaps, and the maximum of many noisy estimates is flattered by its own
-luck — the optimizer's curse, which calibration can't fix because it only exists
-in the argmax. Simulated against last season, hits taken on a 4-point edge lost
-~9 points per 5 gameweeks versus never hitting at all.
-
-The **squad builder** (`src/lib/squad-builder.ts`, `/squad`) picks the best
-legal 15 for a budget — 2/5/5/3, at most three per club — following the
-integer-programming formulation in the FPL literature (Ghasemi et al.,
-arXiv:2505.02170): the objective is the starting XI's horizon xPts with the
-captain counted twice and bench slots discounted to 15%. The captain term is
-what buys a premium a pure value-per-pound squad would skip; the bench discount
-is why cheap enablers appear there without a hard-coded budget split. Solved by
-greedy seeds + steepest-ascent swap search (milliseconds, all constraints
-uniform). On reconstructed last-season windows it out-scored feasible
-points-per-pound template squads in 7 of 7 trials on actual points.
-
-The papers' predictive signals were tested before being adopted
-(`scripts/backtest/ensemble-test.ts`): blending ICT index or form into the
-engine's ranking added ≤0.003 spearman — the engine's recent-window xG/xA
-already carries that information — so the ranking model stays as is.
-
-Chip advice
-(`src/lib/chips.ts`) sits on top: Triple Captain targets the best
-single-player gameweek, Bench Boost the best full-15 gameweek, Free Hit the
-worst blank, and the Wildcard is judged by how much xPts a rebuild adds.
+per 90, projected minutes, Poisson clean-sheet odds, saves,
+defensive-contribution points, bonus rate — adjusted per fixture by
+difficulty, blended with each player's last five matches where the data can
+be afforded, and calibrated onto the scale points are actually scored on.
+Backtested walk-forward against last season with no lookahead: transfer
+ranking at Spearman 0.414 vs 0.351 for recent form and 0.285 for
+points-per-game, with near-exact decile calibration. The full model, the
+evidence, and its blind spots: [docs/engine.md](docs/engine.md).
 
 ## Finding your team ID
 
@@ -101,8 +67,12 @@ actually happened — versus naive baselines (season points-per-game, recent
 form) so the numbers are interpretable.
 
 ```bash
-npm run backtest:fetch   # one-time: cache last season's data (gitignored)
-npm run backtest         # walk-forward run + report
+npm run backtest:fetch      # one-time: cache last season's data (gitignored)
+npm run backtest            # walk-forward accuracy + transfer-ranking report
+npm run backtest:calibrate  # fit + validate the calibration line
+npm run backtest:strategies # planner vs single-swap vs never-transfer, on actuals
+npm run backtest:squad      # squad builder vs template squads, on actuals
+npm run backtest:ensemble   # do ICT/form blends beat the engine? (no)
 ```
 
 It measures projection accuracy (per player-gameweek) and transfer-decision
