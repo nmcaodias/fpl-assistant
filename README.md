@@ -61,6 +61,25 @@ npm run dev
 
 Open http://localhost:3000.
 
+## Backtest
+
+`scripts/backtest/` walk-forward tests the engine against last season. For each
+gameweek it rebuilds the engine's inputs from earlier rounds only (no
+lookahead), runs the real `projection.ts`, and scores the output against what
+actually happened — versus naive baselines (season points-per-game, recent
+form) so the numbers are interpretable.
+
+```bash
+npm run backtest:fetch   # one-time: cache last season's data (gitignored)
+npm run backtest         # walk-forward run + report
+```
+
+It measures projection accuracy (per player-gameweek) and transfer-decision
+quality (does a high horizon ranking predict actual returns over the next 5
+gameweeks). It can't judge the availability model: there's no historical
+injury feed, so everyone is assumed available and FPL's own `ep_next` anchor
+is switched off — it tests the rate/minutes/fixture/form core.
+
 ## Deploy (Vercel)
 
 Push this repo to GitHub, then import it at https://vercel.com/new — no
