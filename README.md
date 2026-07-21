@@ -82,8 +82,20 @@ gameweeks). It can't judge the availability model: there's no historical
 injury feed, so everyone is assumed available and FPL's own `ep_next` anchor
 is switched off — it tests the rate/minutes/fixture/form core.
 
-## Deploy (Vercel)
+## Deploy for free (Vercel)
 
-Push this repo to GitHub, then import it at https://vercel.com/new — no
-environment variables or configuration needed. The API routes run as
-serverless functions.
+The app has no database, no environment variables, and no background jobs —
+it deploys to Vercel's free Hobby tier as-is:
+
+1. Go to https://vercel.com/new and sign in with GitHub.
+2. Import this repository.
+3. Accept the auto-detected Next.js defaults and click **Deploy**.
+
+The site goes live at `<project>.vercel.app`, the `/api/fpl/*` proxy routes
+run as serverless functions, and every push to the default branch redeploys
+automatically.
+
+Any other host that runs Next.js serverless functions also works (Netlify,
+Cloudflare via OpenNext, Render). Static-only hosts such as GitHub Pages do
+not: the `/api/fpl/*` routes must run server-side because the FPL API blocks
+browser CORS.
