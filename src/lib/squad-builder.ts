@@ -92,14 +92,20 @@ function reserveFor(
   return total;
 }
 
-function objectiveOf(squad: PlayerProjection[]): {
+/** A manager-chosen starting-XI shape: [DEF, MID, FWD]. Null = best legal. */
+export type Formation = [number, number, number];
+
+function objectiveOf(
+  squad: PlayerProjection[],
+  formation: Formation | null,
+): {
   objective: number;
   starters: PlayerProjection[];
   bench: PlayerProjection[];
   captain: PlayerProjection;
   xiEp: number;
 } {
-  const starters = bestXi(squad, ep);
+  const starters = formation ? bestXi(squad, ep, [formation]) : bestXi(squad, ep);
   const inXi = new Set(starters.map((p) => p.player.id));
   const bench = squad.filter((p) => !inXi.has(p.player.id)).sort((a, b) => ep(b) - ep(a));
   const xiEp = starters.reduce((s, p) => s + ep(p), 0);
@@ -163,9 +169,10 @@ function localSearch(
   squad: PlayerProjection[],
   pool: Pool,
   budgetTenths: number,
+  formation: Formation | null,
 ): PlayerProjection[] {
   let current = squad;
-  let currentObj = objectiveOf(current).objective;
+  let currentObj = objectiveOf(current, formation).objective;
 
   for (;;) {
     const spent = current.reduce((s, p) => s + cost(p), 0);
@@ -182,7 +189,7 @@ function localSearch(
           (clubCount[cand.player.team] ?? 0) - (cand.player.team === out.player.team ? 1 : 0);
         if (clubAfter >= MAX_PER_CLUB) continue;
         const next = current.map((p) => (p.player.id === out.player.id ? cand : p));
-        const obj = objectiveOf(next).objective;
+        const obj = objectiveOf(next, formation).objective;
         if (obj > currentObj + 1e-9 && (!bestSwap || obj > bestSwap.obj)) {
           bestSwap = { out, in: cand, obj };
         }
@@ -196,12 +203,17 @@ function localSearch(
 
 /**
  * Build the best squad the search can find for the budget (tenths of £m).
+ * `formation` fixes the starting-XI shape ([DEF, MID, FWD], e.g. [4, 4, 2]);
+ * null lets the optimizer pick the best legal formation. The 15-man quotas
+ * (2/5/5/3) are an FPL rule and never change — the tactic only shapes which
+ * eleven start, and the optimizer buys the squad around it.
  * Deterministic. Returns null when the pool can't fill a legal squad at all
  * (e.g. a budget below the sum of cheapest legal players).
  */
 export function buildSquad(
   market: Map<number, PlayerProjection>,
   budgetTenths: number,
+  formation: Formation | null = null,
 ): BuiltSquad | null {
   const pool = buildPool(market);
   if (([1, 2, 3, 4] as Position[]).some((pos) => (pool.byPos.get(pos)?.length ?? 0) < SQUAD_QUOTAS[pos]))
@@ -222,8 +234,8 @@ export function buildSquad(
   let best: PlayerProjection[] | null = null;
   let bestObj = -Infinity;
   for (const seed of seeds) {
-    const improved = localSearch(seed, pool, budgetTenths);
-    const obj = objectiveOf(improved).objective;
+    const improved = localSearch(seed, pool, budgetTenths, formation);
+    const obj = objectiveOf(improved, formation).objective;
     if (obj > bestObj) {
       bestObj = obj;
       best = improved;
@@ -231,7 +243,7 @@ export function buildSquad(
   }
   if (!best) return null;
 
-  const detail = objectiveOf(best);
+  const detail = objectiveOf(best, formation);
   const costTenths = best.reduce((s, p) => s + cost(p), 0);
   return {
     starters: detail.starters,

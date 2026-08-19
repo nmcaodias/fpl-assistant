@@ -191,6 +191,30 @@ describe("buildSquad", () => {
     expect(fromClub99.length).toBeLessThanOrEqual(3);
   });
 
+  it("fields exactly the chosen tactic when a formation is fixed", () => {
+    const market = openMarket();
+    for (const formation of [[5, 4, 1], [3, 4, 3], [4, 4, 2]] as const) {
+      const [d, m, f] = formation;
+      const squad = buildSquad(market, 1000, [d, m, f])!;
+      const count = (pos: Position) =>
+        squad.starters.filter((p) => p.player.element_type === pos).length;
+      expect([count(2), count(3), count(4)]).toEqual([d, m, f]);
+      expect(count(1)).toBe(1);
+      // The full 15 still obeys the fixed FPL quotas.
+      const all = [...squad.starters, ...squad.bench];
+      for (const pos of [1, 2, 3, 4] as Position[]) {
+        expect(all.filter((p) => p.player.element_type === pos)).toHaveLength(SQUAD_QUOTAS[pos]);
+      }
+    }
+  });
+
+  it("a fixed formation never beats the free-formation objective", () => {
+    const market = openMarket();
+    const free = buildSquad(market, 1000)!;
+    const fixed = buildSquad(market, 1000, [5, 4, 1])!;
+    expect(fixed.objective).toBeLessThanOrEqual(free.objective);
+  });
+
   it("local search improves on every greedy seed (sanity: swaps only ever help)", () => {
     // Not a direct white-box check, but with a market where value-greedy and
     // points-greedy both start wrong, the final objective must at least match

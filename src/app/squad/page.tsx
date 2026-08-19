@@ -3,9 +3,10 @@
 import { useMemo, useState } from "react";
 import { ErrorNote, FormBadge, Loading, SeasonBanner, StatusBadge } from "@/components/ui";
 import { money } from "@/lib/format";
+import { FORMATIONS } from "@/lib/planner";
 import { buildProjectionContext, projectPlayers } from "@/lib/projection";
 import type { PlayerProjection } from "@/lib/projection";
-import { buildSquad } from "@/lib/squad-builder";
+import { buildSquad, type Formation } from "@/lib/squad-builder";
 import type { Bootstrap, Fixture, Position } from "@/lib/types";
 import { POSITION_NAMES } from "@/lib/types";
 import { useBootstrap, useFixtures } from "@/lib/useFpl";
@@ -30,13 +31,18 @@ export default function SquadPage() {
 
 function Builder({ bootstrap, fixtures }: { bootstrap: Bootstrap; fixtures: Fixture[] }) {
   const [budget, setBudget] = useState(100.0);
+  // "" = let the optimizer pick; otherwise "d-m-f" of a legal formation.
+  const [tactic, setTactic] = useState("");
 
   const result = useMemo(() => {
     const ctx = buildProjectionContext(fixtures, bootstrap.events, bootstrap.teams);
     const market = projectPlayers(bootstrap.players, ctx, HORIZON);
-    const squad = buildSquad(market, Math.round(budget * 10));
+    const formation = tactic
+      ? (tactic.split("-").map(Number) as Formation)
+      : null;
+    const squad = buildSquad(market, Math.round(budget * 10), formation);
     return { ctx, squad };
-  }, [bootstrap, fixtures, budget]);
+  }, [bootstrap, fixtures, budget, tactic]);
 
   const teamsById = new Map(bootstrap.teams.map((t) => [t.id, t]));
   const shortName = (id: number) => teamsById.get(id)?.short_name ?? "?";
@@ -51,7 +57,9 @@ function Builder({ bootstrap, fixtures }: { bootstrap: Bootstrap; fixtures: Fixt
         doubled captain — that&apos;s what stops it drifting into a team of
         mid-price &quot;value&quot; picks with nobody worth the armband — and
         weights the bench low, which is why cheap enablers appear there on
-        their own. Works for the season launch or a wildcard rebuild.
+        their own. Works for the season launch or a wildcard rebuild. Pick a
+        tactic to fix the starting shape (DEF-MID-FWD) and the engine buys the
+        squad around it — the 15-man quotas are an FPL rule and never change.
       </p>
       <p className="mb-4 text-xs text-muted">
         Projections come from played football, so brand-new signings and newly
@@ -75,6 +83,24 @@ function Builder({ bootstrap, fixtures }: { bootstrap: Bootstrap; fixtures: Fixt
             className="w-24 rounded border border-grid bg-surface px-2 py-1 tabular-nums"
           />
           <span className="text-ink-2">£m</span>
+        </label>
+        <label className="flex items-center gap-2">
+          <span className="text-ink-2">Tactic</span>
+          <select
+            value={tactic}
+            onChange={(e) => setTactic(e.target.value)}
+            className="rounded border border-grid bg-surface px-2 py-1 tabular-nums"
+          >
+            <option value="">Auto (best formation)</option>
+            {FORMATIONS.map(([d, m, f]) => {
+              const key = `${d}-${m}-${f}`;
+              return (
+                <option key={key} value={key}>
+                  {key}
+                </option>
+              );
+            })}
+          </select>
         </label>
         {result.squad && (
           <span className="text-xs text-muted">
