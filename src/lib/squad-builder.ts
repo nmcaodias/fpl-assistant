@@ -34,7 +34,8 @@ export interface BuiltSquad {
   starters: PlayerProjection[];
   /** The other four, best first. */
   bench: PlayerProjection[];
-  /** Highest-projected starter — the doubled score the objective assumes. */
+  /** Highest-projected outfield starter — the doubled score the objective
+   * assumes. Keepers are never captained. */
   captain: PlayerProjection;
   costTenths: number;
   bankTenths: number;
@@ -109,7 +110,10 @@ function objectiveOf(
   const inXi = new Set(starters.map((p) => p.player.id));
   const bench = squad.filter((p) => !inXi.has(p.player.id)).sort((a, b) => ep(b) - ep(a));
   const xiEp = starters.reduce((s, p) => s + ep(p), 0);
-  const captain = starters.reduce((best, p) => (ep(p) > ep(best) ? p : best), starters[0]);
+  // Outfielders only: a keeper's mean can top a noisy projection, but the
+  // armband doubles a ceiling, and keepers don't have one.
+  const outfield = starters.filter((p) => p.player.element_type !== 1);
+  const captain = outfield.reduce((best, p) => (ep(p) > ep(best) ? p : best), outfield[0]);
   const benchEp = bench.reduce((s, p) => s + ep(p), 0);
   return {
     objective: xiEp + ep(captain) + BENCH_WEIGHT * benchEp,

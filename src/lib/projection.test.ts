@@ -185,7 +185,8 @@ describe("formFactor", () => {
 
   it("stays neutral without a reliable season baseline or when flagged", () => {
     expect(formFactor(8, 0.5, 900, "a")).toBe(1); // ppg under 1
-    expect(formFactor(8, 4, 45, "a")).toBe(1); // under 90 minutes
+    expect(formFactor(8, 4, 300, "a")).toBe(1); // under 360 minutes — early-season noise
+    expect(formFactor(8, 4, 360, "a")).toBeCloseTo(1.5, 5); // at the threshold it bites
     expect(formFactor(8, 4, 900, "d")).toBe(1); // doubtful — availabilityAt owns this
     expect(formFactor(0, 4, 900, "i")).toBe(1); // injured — not double-counted
   });

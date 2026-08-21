@@ -54,8 +54,11 @@ A regressed multiplier: `clamp(1 + (form/PPG − 1) × 0.5, 0.6, 1.6)` — the
 player's recent points-per-game relative to their own season average, moved
 halfway and bounded. Applied **only** when no real recent window fed the rates
 (both describe recency; using both would double-count), only to fully
-available players (injuries are the availability model's job), and never
-between seasons (FPL zeroes `form` then, which would floor the whole market).
+available players (injuries are the availability model's job), never
+between seasons (FPL zeroes `form` then, which would floor the whole market),
+and only once the player has 360 season minutes — before four full matches of
+baseline, `form` and PPG are the same tiny sample and the ratio is noise that
+pinned whole squads to the −40% floor in the opening gameweeks.
 
 ### Availability
 
@@ -188,7 +191,9 @@ XI horizon xPts  +  captain's xPts again  +  0.15 × bench xPts
 The doubled-captain term is what buys a premium a pure value-per-pound squad
 would never take (nobody worth the armband is the classic ROI-squad failure);
 the low bench weight is why cheap enablers appear on the bench without any
-hard-coded budget split. Validated: on reconstructed last-season windows it
+hard-coded budget split. The captain is the best **outfield** starter: a
+keeper's steady mean can top a noisy projection, but the armband doubles a
+ceiling and keepers don't have one. Validated: on reconstructed last-season windows it
 out-scored feasible points-per-pound template squads on actual points in 7 of
 7 trials (~110 ms per build).
 
