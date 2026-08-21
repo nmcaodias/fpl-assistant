@@ -76,18 +76,20 @@ export interface PlannerOptions {
 // --- Best legal starting XI ---
 
 /** Valid FPL formations: 1 GK + DEF 3–5, MID 2–5, FWD 1–3 summing to 10. */
-const FORMATIONS: [number, number, number][] = [];
+export const FORMATIONS: [number, number, number][] = [];
 for (let d = 3; d <= 5; d++)
   for (let m = 2; m <= 5; m++)
     for (let f = 1; f <= 3; f++) if (d + m + f === 10) FORMATIONS.push([d, m, f]);
 
 /**
  * Highest projected-points legal XI from a 15-man squad for one week.
- * `epOf` supplies each player's xPts for that week.
+ * `epOf` supplies each player's xPts for that week. `allowed` restricts the
+ * candidate formations (e.g. a manager-chosen tactic); defaults to all legal.
  */
 export function bestXi(
   squad: PlayerProjection[],
   epOf: (p: PlayerProjection) => number,
+  allowed: readonly [number, number, number][] = FORMATIONS,
 ): PlayerProjection[] {
   const byPos = new Map<Position, PlayerProjection[]>([[1, []], [2, []], [3, []], [4, []]]);
   for (const p of squad) byPos.get(p.player.element_type)?.push(p);
@@ -99,7 +101,7 @@ export function bestXi(
   const gk = take(1, 1);
   let best: PlayerProjection[] = [];
   let bestEp = -Infinity;
-  for (const [d, m, f] of FORMATIONS) {
+  for (const [d, m, f] of allowed) {
     if (byPos.get(2)!.length < d || byPos.get(3)!.length < m || byPos.get(4)!.length < f)
       continue;
     const xi = [...gk, ...take(2, d), ...take(3, m), ...take(4, f)];
