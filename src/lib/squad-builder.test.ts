@@ -86,6 +86,20 @@ describe("buildSquad", () => {
     expect(squad.objective).toBeCloseTo(squad.xiEp + maxEp + 0.15 * benchEp, 1);
   });
 
+  it("never captains a goalkeeper, even one who out-projects the outfield", () => {
+    const market = openMarket();
+    // A keeper with the best projection in the whole market.
+    market.set(999, proj(999, 1, 60, 20));
+    const squad = buildSquad(market, 1000)!;
+    expect(squad.captain.player.element_type).not.toBe(1);
+    // The doubled score in the objective is the captain's, not the keeper's.
+    const benchEp = squad.bench.reduce((s, p) => s + p.horizonEp, 0);
+    expect(squad.objective).toBeCloseTo(
+      squad.xiEp + squad.captain.horizonEp + 0.15 * benchEp,
+      1,
+    );
+  });
+
   it("buys the premium captain a pure value-per-pound squad would skip", () => {
     const market = new Map<number, PlayerProjection>();
     let id = 1;

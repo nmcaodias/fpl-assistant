@@ -119,6 +119,11 @@ const parseNum = (s: string) => {
 const FORM_WEIGHT = 0.5;
 const FORM_FACTOR_MIN = 0.6;
 const FORM_FACTOR_MAX = 1.6;
+/** Season minutes before the form ratio means anything. Early season both
+ * `form` and PPG are the same one-or-two-match sample, so the ratio is pure
+ * noise that pinned whole squads to the -40% floor; four full matches of
+ * baseline is the least that makes the comparison informative. */
+const FORM_MIN_MINUTES = 360;
 /** Weight given to FPL's own ep_next when anchoring the nearest gameweek. */
 const EP_NEXT_WEIGHT = 0.35;
 
@@ -180,8 +185,8 @@ function baselineWeight(p: Player, avail: number): number {
  * Only applied to fully available players: injuries, doubts, and suspensions
  * are already modelled by availabilityAt, and a flagged player's form is
  * depressed for the same reason, so letting form bite too would double-count.
- * A reliable season baseline is required (>=1 PPG over >=90 minutes); without
- * one the factor is neutral.
+ * A reliable season baseline is required (>=1 PPG over >=FORM_MIN_MINUTES);
+ * without one the factor is neutral.
  */
 export function formFactor(
   form: number,
@@ -189,7 +194,7 @@ export function formFactor(
   minutes: number,
   status: string,
 ): number {
-  if (status !== "a" || ppg < 1 || minutes < 90) return 1;
+  if (status !== "a" || ppg < 1 || minutes < FORM_MIN_MINUTES) return 1;
   const ratio = form / ppg;
   return clamp(1 + (ratio - 1) * FORM_WEIGHT, FORM_FACTOR_MIN, FORM_FACTOR_MAX);
 }
